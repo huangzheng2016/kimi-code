@@ -198,7 +198,7 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
     });
   });
 
-  it('marks foreground vs background tasks via run_in_background', async () => {
+  it('lists only background tasks while GET preserves the foreground flag', async () => {
     const id = await createSession();
     const tasks = await mainAgentTasks(id);
     const backgroundId = tasks.registerTask(fakeTask('agent'));
@@ -208,7 +208,12 @@ describe('server-v2 /api/v1/sessions/{sid}/tasks', () => {
     const { body } = await getJson<ListWire>(`/api/v1/sessions/${id}/tasks`);
     const byId = new Map(body.data.items.map((t) => [t.id, t]));
     expect(byId.get(backgroundId)?.run_in_background).toBe(true);
-    expect(byId.get(foregroundId)?.run_in_background).toBe(false);
+    expect(byId.has(foregroundId)).toBe(false);
+
+    const foreground = await getJson<TaskWire>(
+      `/api/v1/sessions/${id}/tasks/${foregroundId}`,
+    );
+    expect(foreground.body.data.run_in_background).toBe(false);
   });
 
   it('drops settled foreground tasks from the list but keeps settled background ones', async () => {

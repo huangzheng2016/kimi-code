@@ -122,11 +122,12 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
         return;
       }
 
-      // `list(false)` = include terminal (ghost) tasks, matching v1 which
-      // lists everything and filters by wire status in-memory.
-      const all = (resolved.tasks?.list(false) ?? []).map((info) =>
-        toWireTask(session_id, info),
-      );
+      // `list(false)` includes terminal ghost records. The v1 endpoint lists
+      // only background tasks, while v2 also tracks foreground work internally,
+      // so keep foreground ownership on the snapshot / WS path.
+      const all = (resolved.tasks?.list(false) ?? [])
+        .filter((info) => info.detached !== false)
+        .map((info) => toWireTask(session_id, info));
       const query = req.query as { status?: TaskStatus };
       const items =
         query.status !== undefined ? all.filter((t) => t.status === query.status) : all;
