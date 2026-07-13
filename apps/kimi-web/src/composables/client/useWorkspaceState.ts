@@ -486,6 +486,13 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   // outside it. Avoids clipping an active workspace's history at an arbitrary
   // 5-session boundary when it has a run of recently-updated sessions.
   const SESSIONS_RECENT_WINDOW_MS = 12 * 60 * 60 * 1000;
+  // Cached rows around a failed automatic continuation are only provisional.
+  // Remember that boundary and snapshot locally so the next retry can re-drain
+  // from the workspace head and atomically refresh the already-cached range.
+  const incompleteSessionWindowsByWorkspace = new Map<
+    string,
+    { beforeId: string; knownSessions: { id: string; updatedAt: string }[] }
+  >();
 
   /** Drain every page of sessions, newest first. A single global walk (instead of
    *  per-workspace) so sessions whose cwd is not a registered workspace root are
@@ -497,6 +504,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   }> {
     const api = getKimiWebApi();
     const items: AppSession[] = [];
+    const itemIds = new Set<string>();
     let beforeId: string | undefined;
     let continuationError: unknown;
     for (;;) {
@@ -512,7 +520,15 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         continuationError = error;
         break;
       }
+      if (
+        beforeId !== undefined &&
+        (page.items.length === 0 || page.items.some((session) => itemIds.has(session.id)))
+      ) {
+        continuationError = new Error('Session pagination did not advance');
+        break;
+      }
       items.push(...page.items);
+      for (const session of page.items) itemIds.add(session.id);
       if (!page.hasMore || page.items.length === 0) break;
       beforeId = page.items[page.items.length - 1]!.id;
     }
@@ -568,6 +584,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   }> {
     const api = getKimiWebApi();
     const items: AppSession[] = [];
+    const itemIds = new Set<string>();
     const now = Date.now();
     const ageOf = (s: AppSession): number => now - new Date(s.updatedAt).getTime();
     let beforeId: string | undefined;
@@ -591,6 +608,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         hasMore = true;
         break;
       }
+      if (
+        !isFirstPage &&
+        (page.items.length === 0 || page.items.some((session) => itemIds.has(session.id)))
+      ) {
+        continuationError = new Error('Session pagination did not advance');
+        hasMore = true;
+        break;
+      }
       hasMore = page.hasMore;
       if (page.items.length === 0) break;
       const oldest = page.items[page.items.length - 1]!;
@@ -605,12 +630,15 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
           (s) => ageOf(s) >= SESSIONS_RECENT_WINDOW_MS,
         );
         const keep = boundaryIndex >= 0 ? boundaryIndex + 1 : page.items.length;
-        items.push(...page.items.slice(0, keep));
+        const keptItems = page.items.slice(0, keep);
+        items.push(...keptItems);
+        for (const session of keptItems) itemIds.add(session.id);
         hasMore = page.hasMore || keep < page.items.length;
         break;
       }
 
       items.push(...page.items);
+      for (const session of page.items) itemIds.add(session.id);
       isFirstPage = false;
       if (!page.hasMore || oldestBeyondWindow) break;
       beforeId = oldest.id;
@@ -634,6 +662,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         fallback.error === undefined
           ? fallback.sessions
           : mergePartialSessionsWithCached(fallback.sessions);
+      incompleteSessionWindowsByWorkspace.clear();
       rawState.sessionsHasMoreByWorkspace = {};
       rawState.sessionsCursorByWorkspace = {};
       rawState.sessionsInitialCountByWorkspace = {};
@@ -648,6 +677,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const loadedIds = new Set<string>();
     const successfulPages = new Map<string, { items: AppSession[]; hasMore: boolean }>();
     const failedWorkspaceIds = new Set<string>();
+    const continuationFailedWorkspaceIds = new Set<string>();
     let firstError: unknown;
     for (let index = 0; index < results.length; index++) {
       const result = results[index]!;
@@ -656,6 +686,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         if (result.value.error !== undefined) {
           if (failedWorkspaceIds.size === 0) firstError = result.value.error;
           failedWorkspaceIds.add(result.value.workspaceId);
+          continuationFailedWorkspaceIds.add(result.value.workspaceId);
+        } else {
+          incompleteSessionWindowsByWorkspace.delete(result.value.workspaceId);
         }
         for (const session of result.value.page.items) {
           if (loadedIds.has(session.id)) continue;
@@ -675,21 +708,51 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       pushOperationFailure('load', firstError);
       return undefined;
     }
-    const failedWorkspaceRoots = new Set(
-      workspaces
-        .filter((workspace) => failedWorkspaceIds.has(workspace.id))
-        .map((workspace) => workspace.root),
+    const pendingCachedSessionsByWorkspace = new Map(
+      [...continuationFailedWorkspaceIds].map((workspaceId) => [workspaceId, [] as AppSession[]]),
     );
     const registeredWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
     for (const session of rawState.sessions) {
-      const belongsToFailedWorkspace =
-        session.workspaceId !== undefined && registeredWorkspaceIds.has(session.workspaceId)
-          ? failedWorkspaceIds.has(session.workspaceId)
-          : failedWorkspaceRoots.has(session.cwd) ||
-            failedWorkspaceIds.has(workspaceIdForSession(session));
-      if (!belongsToFailedWorkspace || loadedIds.has(session.id)) continue;
+      let failedWorkspaceId: string | undefined;
+      if (
+        session.workspaceId !== undefined &&
+        registeredWorkspaceIds.has(session.workspaceId)
+      ) {
+        if (failedWorkspaceIds.has(session.workspaceId)) {
+          failedWorkspaceId = session.workspaceId;
+        }
+      } else {
+        const mappedWorkspaceId = workspaceIdForSession(session);
+        if (failedWorkspaceIds.has(mappedWorkspaceId)) {
+          failedWorkspaceId = mappedWorkspaceId;
+        } else {
+          failedWorkspaceId = workspaces.find(
+            (workspace) =>
+              failedWorkspaceIds.has(workspace.id) && workspace.root === session.cwd,
+          )?.id;
+        }
+      }
+      if (failedWorkspaceId === undefined || loadedIds.has(session.id)) continue;
       loaded.push(session);
       loadedIds.add(session.id);
+      pendingCachedSessionsByWorkspace.get(failedWorkspaceId)?.push(session);
+    }
+    for (const workspaceId of continuationFailedWorkspaceIds) {
+      const page = successfulPages.get(workspaceId)!;
+      const beforeId = page.items.at(-1)?.id;
+      const knownSessions = [
+        ...page.items,
+        ...(pendingCachedSessionsByWorkspace.get(workspaceId) ?? []),
+      ]
+        .toSorted(
+          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        )
+        .map((session) => ({ id: session.id, updatedAt: session.updatedAt }));
+      if (beforeId === undefined) {
+        incompleteSessionWindowsByWorkspace.delete(workspaceId);
+      } else {
+        incompleteSessionWindowsByWorkspace.set(workspaceId, { beforeId, knownSessions });
+      }
     }
 
     const hasMore: Record<string, boolean> = {};
@@ -744,12 +807,94 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       [workspaceId]: true,
     };
     try {
+      const incompleteWindow = incompleteSessionWindowsByWorkspace.get(workspaceId);
+      if (incompleteWindow?.beforeId === beforeId) {
+        // A cursor retry cannot distinguish an archived row from a renamed row
+        // that moved ahead of the cursor, and a removed cursor itself has
+        // different fallback behavior across backends. Re-drain from the
+        // workspace head through the known cached range, then commit atomically.
+        const refreshed = await loadInitialSessionsForWorkspace(workspaceId);
+        if (refreshed.error !== undefined) {
+          pushOperationFailure('loadMoreSessions', refreshed.error);
+          return;
+        }
+
+        const refreshedById = new Map(
+          refreshed.page.items.map((session) => [session.id, session] as const),
+        );
+        const knownTimestamps = incompleteWindow.knownSessions
+          .map((session) => new Date(session.updatedAt).getTime())
+          .filter(Number.isFinite);
+        const oldestKnownTimestamp = Math.min(...knownTimestamps);
+        let hasMore = refreshed.page.hasMore;
+        let nextCursor = refreshed.page.items.at(-1)?.id;
+        let coveredKnownRange =
+          Number.isFinite(oldestKnownTimestamp) &&
+          refreshed.page.items.at(-1) !== undefined &&
+          new Date(refreshed.page.items.at(-1)!.updatedAt).getTime() <
+            oldestKnownTimestamp;
+        while (hasMore && !coveredKnownRange) {
+          if (nextCursor === undefined) throw new Error('Session pagination did not advance');
+          const page = await getKimiWebApi().listSessions({
+            workspaceId,
+            pageSize: SESSIONS_LOAD_MORE_SIZE,
+            beforeId: nextCursor,
+            excludeEmpty: true,
+          });
+          if (
+            page.items.length === 0 ||
+            page.items.some((session) => refreshedById.has(session.id))
+          ) {
+            throw new Error('Session pagination did not advance');
+          }
+          for (const session of page.items) refreshedById.set(session.id, session);
+          hasMore = page.hasMore;
+          const last = page.items.at(-1);
+          if (last !== undefined) {
+            nextCursor = last.id;
+            coveredKnownRange =
+              new Date(last.updatedAt).getTime() < oldestKnownTimestamp;
+          }
+        }
+
+        const refreshedSessions = [...refreshedById.values()].toSorted(
+          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        );
+        const returnedIds = new Set(refreshedById.keys());
+        const replacedIds = new Set(
+          incompleteWindow.knownSessions.map((session) => session.id),
+        );
+        const sessions = [
+          ...rawState.sessions.filter(
+            (session) => !replacedIds.has(session.id) && !returnedIds.has(session.id),
+          ),
+          ...refreshedSessions,
+        ].toSorted(
+          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        );
+        setSessionsPreservingLiveUsage(sessions);
+        incompleteSessionWindowsByWorkspace.delete(workspaceId);
+        rawState.sessionsCursorByWorkspace = {
+          ...rawState.sessionsCursorByWorkspace,
+          [workspaceId]: nextCursor,
+        };
+        rawState.sessionsHasMoreByWorkspace = {
+          ...rawState.sessionsHasMoreByWorkspace,
+          [workspaceId]: hasMore,
+        };
+        return;
+      }
+      if (incompleteWindow !== undefined) {
+        incompleteSessionWindowsByWorkspace.delete(workspaceId);
+      }
+
       const page = await getKimiWebApi().listSessions({
         workspaceId,
         pageSize: SESSIONS_LOAD_MORE_SIZE,
         beforeId,
         excludeEmpty: true,
       });
+      const nextCursor = page.items.at(-1)?.id ?? beforeId;
       // Append de-duped against the latest list so a concurrently added/removed
       // session is respected.
       const existing = new Set(rawState.sessions.map((s) => s.id));
@@ -758,8 +903,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // Advance the cursor to the end of the page we just fetched.
       rawState.sessionsCursorByWorkspace = {
         ...rawState.sessionsCursorByWorkspace,
-        [workspaceId]:
-          page.items.length > 0 ? page.items[page.items.length - 1]!.id : beforeId,
+        [workspaceId]: nextCursor,
       };
       // Trust the server's hasMore. Deriving it from the workspace session_count
       // is unsafe: archive/delete only removes the local session and leaves the
@@ -792,6 +936,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     setSessionsPreservingLiveUsage(sessions);
     rawState.sessionsFullyLoaded = result.error === undefined;
     if (result.error !== undefined) return;
+    incompleteSessionWindowsByWorkspace.clear();
     const cleared: Record<string, boolean> = {};
     for (const w of rawState.workspaces) cleared[w.id] = false;
     rawState.sessionsHasMoreByWorkspace = cleared;

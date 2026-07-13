@@ -1232,7 +1232,7 @@ describe('useWorkspaceState — session list loading', () => {
     expect(deps.pushOperationFailure).toHaveBeenCalledWith('load', error);
   });
 
-  it('loads the next page when a retry follows an automatic continuation failure', async () => {
+  it('refreshes a renamed continuation row that moved ahead of the failed cursor', async () => {
     const error = new Error('automatic continuation unavailable');
     const cached = {
       ...createSession(),
@@ -1241,28 +1241,137 @@ describe('useWorkspaceState — session list loading', () => {
       updatedAt: '2099-01-01T00:00:00.000Z',
     };
     const fresh = { ...cached, title: 'Fresh first page' };
-    const older = {
+    const cachedOlder = {
       ...createSession(),
       id: 'sess_older',
+      title: 'Cached older page',
       workspaceId: 'wd_1',
       updatedAt: '2025-12-31T00:00:00.000Z',
+    };
+    const freshOlder = {
+      ...cachedOlder,
+      title: 'Fresh older page',
+      updatedAt: '2100-01-01T00:00:00.000Z',
     };
     apiMock.listWorkspaces.mockResolvedValue([workspace('wd_1', '/workspace', 'Workspace')]);
     apiMock.listSessions
       .mockResolvedValueOnce({ items: [fresh], hasMore: true })
       .mockRejectedValueOnce(error)
-      .mockResolvedValue({ items: [older], hasMore: false });
-    const { state, deps, workspaceState } = createSessionLoadRig([cached]);
+      .mockImplementation(async ({ beforeId }: { beforeId?: string }) =>
+        beforeId === undefined
+          ? { items: [freshOlder, fresh], hasMore: false }
+          : { items: [], hasMore: false },
+      );
+    const { state, deps, workspaceState } = createSessionLoadRig([cached, cachedOlder]);
 
     await workspaceState.load();
 
-    expect(state.sessions.map((session) => session.title)).toEqual(['Fresh first page']);
+    expect(state.sessions.map((session) => session.title)).toEqual([
+      'Fresh first page',
+      'Cached older page',
+    ]);
     expect(deps.pushOperationFailure).toHaveBeenCalledWith('load', error);
 
     await workspaceState.loadMoreSessions('wd_1');
 
-    expect(state.sessions.map((session) => session.id)).toEqual(['sess_1', 'sess_older']);
+    expect(state.sessions.map((session) => session.title)).toEqual([
+      'Fresh older page',
+      'Fresh first page',
+    ]);
     expect(deps.pushOperationFailure).toHaveBeenCalledOnce();
+  });
+
+  it('keeps cached rows when a continuation retry cannot advance', async () => {
+    const first = {
+      ...createSession(),
+      title: 'Fresh first page',
+      workspaceId: 'wd_1',
+      updatedAt: '2099-01-01T00:00:00.000Z',
+    };
+    const cachedOlder = {
+      ...createSession(),
+      id: 'sess_older',
+      title: 'Cached older page',
+      workspaceId: 'wd_1',
+      updatedAt: '2098-12-31T00:00:00.000Z',
+    };
+    apiMock.listWorkspaces.mockResolvedValue([workspace('wd_1', '/workspace', 'Workspace')]);
+    apiMock.listSessions
+      .mockResolvedValueOnce({ items: [first], hasMore: true })
+      .mockRejectedValueOnce(new Error('automatic continuation unavailable'))
+      .mockResolvedValueOnce({ items: [first], hasMore: true })
+      .mockResolvedValue({ items: [], hasMore: false });
+    const { state, deps, workspaceState } = createSessionLoadRig([first, cachedOlder]);
+
+    await workspaceState.load();
+    await workspaceState.loadMoreSessions('wd_1');
+
+    expect(state.sessions.map((session) => session.id)).toEqual(['sess_1', 'sess_older']);
+    expect(deps.pushOperationFailure).toHaveBeenLastCalledWith(
+      'loadMoreSessions',
+      expect.any(Error),
+    );
+  });
+
+  it('removes missing cached rows without dropping the older uncovered tail', async () => {
+    const first = {
+      ...createSession(),
+      title: 'First page',
+      workspaceId: 'wd_1',
+      updatedAt: '2099-12-31T00:00:00.000Z',
+    };
+    const missing = {
+      ...createSession(),
+      id: 'sess_missing',
+      title: 'Missing after retry',
+      workspaceId: 'wd_1',
+      updatedAt: '2025-12-31T00:00:00.000Z',
+    };
+    const survivor = {
+      ...createSession(),
+      id: 'sess_survivor',
+      title: 'Older survivor',
+      workspaceId: 'wd_1',
+      updatedAt: '2025-12-31T00:00:00.000Z',
+    };
+    const boundary = {
+      ...createSession(),
+      id: 'sess_boundary',
+      title: 'Recent window boundary',
+      workspaceId: 'wd_1',
+      updatedAt: '2025-12-31T00:00:00.000Z',
+    };
+    const uncoveredTail = {
+      ...createSession(),
+      id: 'sess_uncovered',
+      title: 'Older uncovered tail',
+      workspaceId: 'wd_1',
+      updatedAt: '2025-12-31T00:00:00.000Z',
+    };
+    apiMock.listWorkspaces.mockResolvedValue([workspace('wd_1', '/workspace', 'Workspace')]);
+    apiMock.listSessions
+      .mockResolvedValueOnce({ items: [first], hasMore: true })
+      .mockRejectedValueOnce(new Error('automatic continuation unavailable'))
+      .mockImplementation(async ({ beforeId }: { beforeId?: string }) => {
+        if (beforeId === undefined) return { items: [first, boundary], hasMore: true };
+        if (beforeId === boundary.id) {
+          return { items: [survivor, uncoveredTail], hasMore: false };
+        }
+        return { items: [], hasMore: false };
+      });
+    const { state, workspaceState } = createSessionLoadRig([
+      first,
+      boundary,
+      missing,
+      survivor,
+      uncoveredTail,
+    ]);
+
+    await workspaceState.load();
+    await workspaceState.loadMoreSessions('wd_1');
+
+    expect(state.sessions.some((session) => session.id === missing.id)).toBe(false);
+    expect(state.sessions.some((session) => session.id === uncoveredTail.id)).toBe(true);
   });
 
   it('recovers the global session list when a retry follows a second-page failure', async () => {
