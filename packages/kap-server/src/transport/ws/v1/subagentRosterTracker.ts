@@ -62,6 +62,15 @@ export class SubagentRosterTracker {
         entry.suspended_reason = event.reason;
         return;
       }
+      case 'task.started': {
+        if (event.info.kind !== 'agent') return;
+        const agentId = event.info.agentId;
+        if (agentId === undefined) return;
+        const entry = this.bySession.get(sessionId)?.get(agentId);
+        if (!entry) return;
+        entry.run_in_background = true;
+        return;
+      }
       case 'subagent.completed': {
         const entry = this.bySession.get(sessionId)?.get(event.subagentId);
         if (!entry) return;

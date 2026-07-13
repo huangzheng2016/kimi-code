@@ -353,6 +353,45 @@ describe('SessionEventBroadcaster', () => {
     ]);
   });
 
+  it('getSnapshotState reflects a foreground subagent detached by its Agent task', async () => {
+    const lc = new FakeLifecycle();
+    const main = lc.addAgent('main');
+    sessions.set('s1', lc);
+    await bc.subscribe('s1', collectingTarget().target);
+
+    main.bus.emit(
+      agentEvent('subagent.spawned', {
+        subagentId: 'agent_1',
+        subagentName: 'explore',
+        parentToolCallId: 'call_1',
+        description: 'explore the auth flow',
+        runInBackground: false,
+      }),
+    );
+    main.bus.emit(
+      agentEvent('task.started', {
+        info: {
+          taskId: 'agent-task-1',
+          kind: 'agent',
+          agentId: 'agent_1',
+          description: 'explore the auth flow',
+          status: 'running',
+          detached: true,
+          startedAt: Date.now(),
+          endedAt: null,
+        },
+      }),
+    );
+
+    const snapshot = await bc.getSnapshotState('s1');
+    expect(snapshot.subagents).toMatchObject([
+      {
+        id: 'agent_1',
+        run_in_background: true,
+      },
+    ]);
+  });
+
   it('getSnapshotState drops the live subagent roster when the main turn ends', async () => {
     const lc = new FakeLifecycle();
     const main = lc.addAgent('main');

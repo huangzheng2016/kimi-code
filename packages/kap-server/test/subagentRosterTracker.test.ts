@@ -75,6 +75,24 @@ describe('SubagentRosterTracker', () => {
     expect(resumed.suspended_reason).toBeUndefined();
   });
 
+  it('marks a foreground subagent as background when its Agent task detaches', () => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawned());
+    t.apply(
+      SID,
+      ev({
+        type: 'task.started',
+        info: {
+          taskId: 'agent-task-1',
+          kind: 'agent',
+          agentId: 'agent_1',
+          detached: true,
+        },
+      }),
+    );
+    expect(t.get(SID)[0]?.run_in_background).toBe(true);
+  });
+
   it('records completion with the result summary as output preview', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawned());
