@@ -360,6 +360,11 @@ function toWireTask(
     // running tasks usually start immediately after creation.
     created_at: createdIso,
     started_at: createdIso,
+    // `detached === false` marks a task a tool call is still waiting on in the
+    // foreground (v2 registers those too, e.g. foreground Agent runs) — the web
+    // dock must not list them as background work. Legacy records without the
+    // flag count as detached.
+    run_in_background: info.detached !== false,
   };
   if (info.endedAt !== null && info.endedAt !== undefined) {
     base.completed_at = new Date(info.endedAt).toISOString();
