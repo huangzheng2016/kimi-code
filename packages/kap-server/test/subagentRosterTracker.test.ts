@@ -93,6 +93,35 @@ describe('SubagentRosterTracker', () => {
     expect(t.get(SID)[0]?.run_in_background).toBe(true);
   });
 
+  it.each([
+    ['completed', 'completed', 'completed'],
+    ['failed', 'failed', 'failed'],
+    ['timed_out', 'failed', 'failed'],
+    ['killed', 'cancelled', 'failed'],
+    ['lost', 'failed', 'failed'],
+  ] as const)('maps Agent task terminal status %s into the snapshot', (taskStatus, status, phase) => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawned());
+    t.apply(
+      SID,
+      ev({
+        type: 'task.terminated',
+        info: {
+          taskId: 'agent-task-1',
+          kind: 'agent',
+          agentId: 'agent_1',
+          status: taskStatus,
+          endedAt: 1_700_000_000_000,
+        },
+      }),
+    );
+    expect(t.get(SID)[0]).toMatchObject({
+      status,
+      subagent_phase: phase,
+      completed_at: '2023-11-14T22:13:20.000Z',
+    });
+  });
+
   it('records completion with the result summary as output preview', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawned());

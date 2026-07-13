@@ -71,6 +71,23 @@ export class SubagentRosterTracker {
         entry.run_in_background = true;
         return;
       }
+      case 'task.terminated': {
+        if (event.info.kind !== 'agent' || event.info.status === 'running') return;
+        const agentId = event.info.agentId;
+        if (agentId === undefined) return;
+        const entry = this.bySession.get(sessionId)?.get(agentId);
+        if (!entry) return;
+        entry.status =
+          event.info.status === 'completed'
+            ? 'completed'
+            : event.info.status === 'killed'
+              ? 'cancelled'
+              : 'failed';
+        entry.subagent_phase = event.info.status === 'completed' ? 'completed' : 'failed';
+        entry.suspended_reason = undefined;
+        entry.completed_at = new Date(event.info.endedAt ?? Date.now()).toISOString();
+        return;
+      }
       case 'subagent.completed': {
         const entry = this.bySession.get(sessionId)?.get(event.subagentId);
         if (!entry) return;

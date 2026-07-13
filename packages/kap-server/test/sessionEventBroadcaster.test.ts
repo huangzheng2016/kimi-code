@@ -353,7 +353,7 @@ describe('SessionEventBroadcaster', () => {
     ]);
   });
 
-  it('getSnapshotState reflects a foreground subagent detached by its Agent task', async () => {
+  it('getSnapshotState follows a foreground Agent task through detach and stop', async () => {
     const lc = new FakeLifecycle();
     const main = lc.addAgent('main');
     sessions.set('s1', lc);
@@ -383,10 +383,37 @@ describe('SessionEventBroadcaster', () => {
       }),
     );
 
-    const snapshot = await bc.getSnapshotState('s1');
-    expect(snapshot.subagents).toMatchObject([
+    const detached = await bc.getSnapshotState('s1');
+    expect(detached.subagents).toMatchObject([
       {
         id: 'agent_1',
+        status: 'running',
+        run_in_background: true,
+      },
+    ]);
+
+    main.bus.emit(
+      agentEvent('task.terminated', {
+        info: {
+          taskId: 'agent-task-1',
+          kind: 'agent',
+          agentId: 'agent_1',
+          description: 'explore the auth flow',
+          status: 'killed',
+          detached: true,
+          startedAt: Date.now(),
+          endedAt: Date.now(),
+          stopReason: 'Stopped by the user',
+        },
+      }),
+    );
+
+    const stopped = await bc.getSnapshotState('s1');
+    expect(stopped.subagents).toMatchObject([
+      {
+        id: 'agent_1',
+        status: 'cancelled',
+        subagent_phase: 'failed',
         run_in_background: true,
       },
     ]);
