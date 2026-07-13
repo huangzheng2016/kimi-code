@@ -606,7 +606,7 @@ describe('mergeSnapshotSubagents', () => {
     expect(merged?.text).toBe('partial answer');
   });
 
-  it('keeps tasks the roster does not know about', () => {
+  it('keeps non-subagent tasks alongside the authoritative roster', () => {
     const background: AppTask = {
       id: 'bash-1',
       sessionId: 's1',
@@ -620,8 +620,35 @@ describe('mergeSnapshotSubagents', () => {
     expect(merged.map((t) => t.id)).toEqual(['a1', 'bash-1']);
   });
 
-  it('returns the existing list untouched when the roster is empty', () => {
+  it('removes stale subagents when the authoritative roster is empty', () => {
+    const background: AppTask = {
+      id: 'bash-1',
+      sessionId: 's1',
+      kind: 'bash',
+      description: 'npm test',
+      status: 'running',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const merged = mergeSnapshotSubagents([], [subagent('stale'), background]);
+    expect(merged).toEqual([background]);
+  });
+
+  it('keeps existing tasks when an older snapshot omits the roster', () => {
     const existing = [subagent('a1')];
-    expect(mergeSnapshotSubagents([], existing)).toBe(existing);
+    expect(mergeSnapshotSubagents(undefined, existing)).toBe(existing);
+  });
+
+  it('replaces subagents missing from a non-empty authoritative roster', () => {
+    const background: AppTask = {
+      id: 'bash-1',
+      sessionId: 's1',
+      kind: 'bash',
+      description: 'npm test',
+      status: 'running',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const roster = [subagent('current')];
+    const merged = mergeSnapshotSubagents(roster, [subagent('stale'), background]);
+    expect(merged).toEqual([roster[0], background]);
   });
 });

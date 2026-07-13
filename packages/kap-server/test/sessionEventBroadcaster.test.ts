@@ -417,7 +417,77 @@ describe('SessionEventBroadcaster', () => {
         run_in_background: true,
       },
     ]);
+
+    main.bus.emit(
+      agentEvent('subagent.completed', {
+        subagentId: 'agent_1',
+        resultSummary: 'late completion',
+      }),
+    );
+    main.bus.emit(agentEvent('subagent.started', { subagentId: 'agent_1' }));
+
+    const afterLateEvents = await bc.getSnapshotState('s1');
+    expect(afterLateEvents.subagents).toEqual(stopped.subagents);
   });
+
+  it.each([
+    ['subagent.completed', 'killed', 'cancelled', 'failed'],
+    ['subagent.failed', 'completed', 'completed', 'completed'],
+  ] as const)(
+    'getSnapshotState lets task.terminated override an earlier %s',
+    async (subagentEvent, taskStatus, status, phase) => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      sessions.set('s1', lc);
+      await bc.subscribe('s1', collectingTarget().target);
+
+      main.bus.emit(
+        agentEvent('subagent.spawned', {
+          subagentId: 'agent_1',
+          description: 'inspect terminal ordering',
+          runInBackground: true,
+        }),
+      );
+      if (subagentEvent === 'subagent.completed') {
+        main.bus.emit(
+          agentEvent(subagentEvent, {
+            subagentId: 'agent_1',
+            resultSummary: 'early completion',
+          }),
+        );
+      } else {
+        main.bus.emit(
+          agentEvent(subagentEvent, {
+            subagentId: 'agent_1',
+            error: 'early failure',
+          }),
+        );
+      }
+      main.bus.emit(
+        agentEvent('task.terminated', {
+          info: {
+            taskId: 'agent-task-1',
+            kind: 'agent',
+            agentId: 'agent_1',
+            description: 'inspect terminal ordering',
+            status: taskStatus,
+            detached: true,
+            startedAt: Date.now(),
+            endedAt: Date.now(),
+          },
+        }),
+      );
+
+      const snapshot = await bc.getSnapshotState('s1');
+      expect(snapshot.subagents).toMatchObject([
+        {
+          id: 'agent_1',
+          status,
+          subagent_phase: phase,
+        },
+      ]);
+    },
+  );
 
   it('getSnapshotState drops the live subagent roster when the main turn ends', async () => {
     const lc = new FakeLifecycle();

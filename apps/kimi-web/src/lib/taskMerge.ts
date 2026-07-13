@@ -22,13 +22,16 @@ export function keepLiveSubagents(restBased: AppTask[], existing: AppTask[]): Ap
 }
 
 /**
- * Seed the task store from the snapshot's subagent roster. The roster is
- * authoritative for identity/status/phase; keep reducer-owned accumulated
- * output (outputLines/text) from any already-live task, and keep tasks the
- * roster does not know about (background bash tasks from REST).
+ * Seed the task store from the snapshot's subagent roster. When present, the
+ * roster is authoritative for all subagents, while reducer-owned accumulated
+ * output (outputLines/text) and non-subagent tasks survive the seed. Older
+ * servers omit the roster, so `undefined` keeps the existing store unchanged.
  */
-export function mergeSnapshotSubagents(roster: AppTask[], existing: AppTask[]): AppTask[] {
-  if (roster.length === 0) return existing;
+export function mergeSnapshotSubagents(
+  roster: AppTask[] | undefined,
+  existing: AppTask[],
+): AppTask[] {
+  if (roster === undefined) return existing;
   const existingById = new Map(existing.map((t) => [t.id, t] as const));
   const rosterIds = new Set(roster.map((t) => t.id));
   const merged = roster.map((task) => {
@@ -36,6 +39,7 @@ export function mergeSnapshotSubagents(roster: AppTask[], existing: AppTask[]): 
     if (!live) return task;
     return { ...task, outputLines: live.outputLines, text: live.text };
   });
-  const kept = existing.filter((t) => !rosterIds.has(t.id));
+  const kept = existing.filter((t) => t.kind !== 'subagent' && !rosterIds.has(t.id));
+  if (merged.length === 0 && kept.length === existing.length) return existing;
   return kept.length === 0 ? merged : [...merged, ...kept];
 }

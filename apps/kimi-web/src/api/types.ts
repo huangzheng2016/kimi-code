@@ -498,8 +498,8 @@ export interface AppSessionSnapshot {
   messages: AppMessage[];
   hasMoreMessages: boolean;
   inFlightTurn: AppInFlightTurn | null;
-  /** Live subagent roster at the watermark — rebuilds swarm cards on refresh. */
-  subagents: AppTask[];
+  /** Live subagent roster at the watermark; absent when an older server does not provide it. */
+  subagents?: AppTask[];
   pendingApprovals: AppApprovalRequest[];
   pendingQuestions: AppQuestionRequest[];
 }

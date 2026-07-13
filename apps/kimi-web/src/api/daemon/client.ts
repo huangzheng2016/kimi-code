@@ -509,8 +509,8 @@ export class DaemonKimiWebApi implements KimiWebApi {
             },
       pendingApprovals: data.pending_approvals.map(toAppApprovalRequest),
       pendingQuestions: data.pending_questions.map(toAppQuestionRequest),
-      // Older servers omit the roster entirely; treat as an empty roster.
-      subagents: (data.subagents ?? []).map(toAppTask),
+      // Preserve omission for older servers; a present empty roster is authoritative.
+      subagents: data.subagents?.map(toAppTask),
     };
   }
 

@@ -46,7 +46,7 @@ export class SubagentRosterTracker {
         return;
       }
       case 'subagent.started': {
-        const entry = this.bySession.get(sessionId)?.get(event.subagentId);
+        const entry = this.runningEntry(sessionId, event.subagentId);
         if (!entry) return;
         entry.subagent_phase = 'working';
         entry.suspended_reason = undefined;
@@ -56,7 +56,7 @@ export class SubagentRosterTracker {
         return;
       }
       case 'subagent.suspended': {
-        const entry = this.bySession.get(sessionId)?.get(event.subagentId);
+        const entry = this.runningEntry(sessionId, event.subagentId);
         if (!entry) return;
         entry.subagent_phase = 'suspended';
         entry.suspended_reason = event.reason;
@@ -66,7 +66,7 @@ export class SubagentRosterTracker {
         if (event.info.kind !== 'agent') return;
         const agentId = event.info.agentId;
         if (agentId === undefined) return;
-        const entry = this.bySession.get(sessionId)?.get(agentId);
+        const entry = this.runningEntry(sessionId, agentId);
         if (!entry) return;
         entry.run_in_background = true;
         return;
@@ -89,7 +89,7 @@ export class SubagentRosterTracker {
         return;
       }
       case 'subagent.completed': {
-        const entry = this.bySession.get(sessionId)?.get(event.subagentId);
+        const entry = this.runningEntry(sessionId, event.subagentId);
         if (!entry) return;
         entry.subagent_phase = 'completed';
         entry.status = 'completed';
@@ -98,7 +98,7 @@ export class SubagentRosterTracker {
         return;
       }
       case 'subagent.failed': {
-        const entry = this.bySession.get(sessionId)?.get(event.subagentId);
+        const entry = this.runningEntry(sessionId, event.subagentId);
         if (!entry) return;
         entry.subagent_phase = 'failed';
         entry.status = 'failed';
@@ -117,6 +117,11 @@ export class SubagentRosterTracker {
       default:
         return;
     }
+  }
+
+  private runningEntry(sessionId: string, agentId: string): SnapshotSubagent | undefined {
+    const entry = this.bySession.get(sessionId)?.get(agentId);
+    return entry?.status === 'running' ? entry : undefined;
   }
 
   /** Fresh copies — callers must not mutate the tracked entries. */

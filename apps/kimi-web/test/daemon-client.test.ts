@@ -1,6 +1,5 @@
 // apps/kimi-web/test/daemon-client.test.ts
-// DaemonKimiWebApi.getSessionGoal — wire → app mapping of GET /sessions/{id}/goal:
-// a present snapshot, explicit null (no active goal), and the request URL.
+// DaemonKimiWebApi wire → app mapping for session goal and snapshot endpoints.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -32,6 +31,38 @@ const WIRE_GOAL = {
     wallClockBudgetReached: false,
     overBudget: false,
   },
+};
+
+const WIRE_SESSION_SNAPSHOT = {
+  as_of_seq: 3,
+  epoch: 'epoch_1',
+  session: {
+    id: 'sess_1',
+    title: 'Test session',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:01.000Z',
+    status: 'idle',
+    archived: false,
+    metadata: { cwd: '/workspace' },
+    agent_config: { model: 'test-model' },
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      total_cost_usd: 0,
+      context_tokens: 0,
+      context_limit: 0,
+      turn_count: 0,
+    },
+    permission_rules: [],
+    message_count: 0,
+    last_seq: 3,
+  },
+  messages: { items: [], has_more: false },
+  in_flight_turn: null,
+  pending_approvals: [],
+  pending_questions: [],
 };
 
 function createApi(): DaemonKimiWebApi {
@@ -73,5 +104,33 @@ describe('DaemonKimiWebApi.getSessionGoal', () => {
     expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe(
       'http://daemon.test/api/v1/sessions/sess_42/goal',
     );
+  });
+});
+
+describe('DaemonKimiWebApi.getSessionSnapshot', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('preserves an omitted subagent roster from an older server', async () => {
+    vi.mocked(fetch).mockResolvedValue(envelope(WIRE_SESSION_SNAPSHOT));
+
+    const snapshot = await createApi().getSessionSnapshot('sess_1');
+
+    expect(snapshot.subagents).toBeUndefined();
+  });
+
+  it('preserves an explicitly empty authoritative subagent roster', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      envelope({ ...WIRE_SESSION_SNAPSHOT, subagents: [] }),
+    );
+
+    const snapshot = await createApi().getSessionSnapshot('sess_1');
+
+    expect(snapshot.subagents).toEqual([]);
   });
 });
