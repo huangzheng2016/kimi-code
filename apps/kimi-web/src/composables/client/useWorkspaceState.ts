@@ -489,22 +489,34 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
   /** Drain every page of sessions, newest first. A single global walk (instead of
    *  per-workspace) so sessions whose cwd is not a registered workspace root are
-   *  still reachable after a refresh. */
-  async function listAllSessionsGlobal(): Promise<AppSession[]> {
+   *  still reachable after a refresh. A later-page failure returns the pages
+   *  already fetched plus the error; only a first-page failure rejects. */
+  async function listAllSessionsGlobal(): Promise<{
+    sessions: AppSession[];
+    error?: unknown;
+  }> {
     const api = getKimiWebApi();
     const items: AppSession[] = [];
     let beforeId: string | undefined;
+    let continuationError: unknown;
     for (;;) {
-      const page = await api.listSessions({
-        pageSize: SESSION_PAGE_SIZE,
-        beforeId,
-        excludeEmpty: true,
-      });
+      let page: { items: AppSession[]; hasMore: boolean };
+      try {
+        page = await api.listSessions({
+          pageSize: SESSION_PAGE_SIZE,
+          beforeId,
+          excludeEmpty: true,
+        });
+      } catch (error) {
+        if (items.length === 0) throw error;
+        continuationError = error;
+        break;
+      }
       items.push(...page.items);
       if (!page.hasMore || page.items.length === 0) break;
       beforeId = page.items[page.items.length - 1]!.id;
     }
-    return items;
+    return { sessions: items, error: continuationError };
   }
 
   /**
@@ -527,6 +539,20 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     );
   }
 
+  /** Keep fresh rows authoritative while retaining cached rows a partial list
+   *  request never reached. */
+  function mergePartialSessionsWithCached(sessions: AppSession[]): AppSession[] {
+    const merged = [...sessions];
+    const loadedIds = new Set(merged.map((session) => session.id));
+    for (const session of rawState.sessions) {
+      if (loadedIds.has(session.id)) continue;
+      merged.push(session);
+      loadedIds.add(session.id);
+    }
+    merged.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    return merged;
+  }
+
   /** Load the initial page of sessions for one workspace, then keep fetching
    *  older pages while the oldest loaded session is still within
    *  SESSIONS_RECENT_WINDOW_MS. Every page (including continuations) uses the
@@ -535,7 +561,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    *  keeping only up to the first session that falls outside the window. */
   async function loadInitialSessionsForWorkspace(
     workspaceId: string,
-  ): Promise<{ workspaceId: string; page: { items: AppSession[]; hasMore: boolean } }> {
+  ): Promise<{
+    workspaceId: string;
+    page: { items: AppSession[]; hasMore: boolean };
+    error?: unknown;
+  }> {
     const api = getKimiWebApi();
     const items: AppSession[] = [];
     const now = Date.now();
@@ -543,6 +573,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     let beforeId: string | undefined;
     let hasMore = false;
     let isFirstPage = true;
+    let continuationError: unknown;
     for (;;) {
       let page: { items: AppSession[]; hasMore: boolean };
       try {
@@ -554,9 +585,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         });
       } catch (error) {
         // A failed continuation page must not discard sessions already loaded
-        // from earlier pages; only a page-1 failure propagates (the caller then
-        // falls back to an empty page for that workspace).
+        // from earlier pages; only a page-1 failure rejects the workspace load.
         if (isFirstPage) throw error;
+        continuationError = error;
+        hasMore = true;
         break;
       }
       hasMore = page.hasMore;
@@ -583,7 +615,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       if (!page.hasMore || oldestBeyondWindow) break;
       beforeId = oldest.id;
     }
-    return { workspaceId, page: { items, hasMore } };
+    return { workspaceId, page: { items, hasMore }, error: continuationError };
   }
 
   /** Fetch the first page of sessions for every known workspace concurrently.
@@ -598,11 +630,16 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // walk so history still shows and mergedWorkspaces can derive workspaces
       // from session cwds, instead of rendering a blank sidebar.
       const fallback = await listAllSessionsGlobal();
+      const sessions =
+        fallback.error === undefined
+          ? fallback.sessions
+          : mergePartialSessionsWithCached(fallback.sessions);
       rawState.sessionsHasMoreByWorkspace = {};
       rawState.sessionsCursorByWorkspace = {};
       rawState.sessionsInitialCountByWorkspace = {};
-      rawState.sessionsFullyLoaded = true;
-      return fallback;
+      rawState.sessionsFullyLoaded = fallback.error === undefined;
+      if (fallback.error !== undefined) pushOperationFailure('load', fallback.error);
+      return sessions;
     }
     const results = await Promise.allSettled(
       workspaces.map((w) => loadInitialSessionsForWorkspace(w.id)),
@@ -616,6 +653,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       const result = results[index]!;
       if (result.status === 'fulfilled') {
         successfulPages.set(result.value.workspaceId, result.value.page);
+        if (result.value.error !== undefined) {
+          if (failedWorkspaceIds.size === 0) firstError = result.value.error;
+          failedWorkspaceIds.add(result.value.workspaceId);
+        }
         for (const session of result.value.page.items) {
           if (loadedIds.has(session.id)) continue;
           loaded.push(session);
@@ -639,9 +680,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         .filter((workspace) => failedWorkspaceIds.has(workspace.id))
         .map((workspace) => workspace.root),
     );
+    const registeredWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
     for (const session of rawState.sessions) {
       const belongsToFailedWorkspace =
-        session.workspaceId !== undefined
+        session.workspaceId !== undefined && registeredWorkspaceIds.has(session.workspaceId)
           ? failedWorkspaceIds.has(session.workspaceId)
           : failedWorkspaceRoots.has(session.cwd) ||
             failedWorkspaceIds.has(workspaceIdForSession(session));
@@ -741,10 +783,15 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    *  first search; a no-op once the full list is loaded. */
   async function loadAllSessions(): Promise<void> {
     if (rawState.sessionsFullyLoaded) return;
-    const sessions = await listAllSessionsGlobal().catch(() => null);
-    if (sessions === null) return;
+    const result = await listAllSessionsGlobal().catch(() => null);
+    if (result === null) return;
+    const sessions =
+      result.error === undefined
+        ? result.sessions
+        : mergePartialSessionsWithCached(result.sessions);
     setSessionsPreservingLiveUsage(sessions);
-    rawState.sessionsFullyLoaded = true;
+    rawState.sessionsFullyLoaded = result.error === undefined;
+    if (result.error !== undefined) return;
     const cleared: Record<string, boolean> = {};
     for (const w of rawState.workspaces) cleared[w.id] = false;
     rawState.sessionsHasMoreByWorkspace = cleared;
