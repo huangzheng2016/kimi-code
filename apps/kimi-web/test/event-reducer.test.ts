@@ -382,6 +382,172 @@ describe('reduceAppEvent taskProgress', () => {
     });
   });
 
+  it('uses the active alias instead of terminal history when a detached task arrives', () => {
+    const oldRun = {
+      ...makeSubagentTask('agent-task-old', 's1'),
+      agentId: 'agent-1',
+      status: 'completed' as const,
+      subagentPhase: 'completed' as const,
+      runInBackground: true,
+    };
+    const foreground = {
+      ...makeSubagentTask('agent-1', 's1'),
+      agentId: 'agent-1',
+      parentToolCallId: 'call-1',
+      status: 'running' as const,
+      runInBackground: false,
+    };
+    const state = {
+      ...createInitialState(),
+      tasksBySession: { s1: [oldRun, foreground] },
+    };
+
+    const next = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: {
+          ...makeSubagentTask('agent-task-new', 's1'),
+          agentId: 'agent-1',
+          status: 'running',
+          runInBackground: true,
+        },
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(next.tasksBySession.s1).toHaveLength(2);
+    expect(next.tasksBySession.s1).toContainEqual(
+      expect.objectContaining({
+        id: 'agent-task-old',
+        status: 'completed',
+      }),
+    );
+    expect(next.tasksBySession.s1).toContainEqual(
+      expect.objectContaining({
+        id: 'agent-task-new',
+        agentId: 'agent-1',
+        status: 'running',
+        parentToolCallId: 'call-1',
+      }),
+    );
+    expect(next.tasksBySession.s1).not.toContainEqual(
+      expect.objectContaining({ id: 'agent-1' }),
+    );
+  });
+
+  it('does not append new-run progress to a terminal task with the same agent id', () => {
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        s1: [
+          {
+            ...makeSubagentTask('agent-task-old', 's1'),
+            agentId: 'agent-1',
+            status: 'completed' as const,
+            subagentPhase: 'completed' as const,
+            text: 'OLD',
+            runInBackground: true,
+          },
+          {
+            ...makeSubagentTask('agent-1', 's1'),
+            agentId: 'agent-1',
+            text: 'NEW',
+            runInBackground: false,
+          },
+        ],
+      },
+    };
+
+    const next = reduceAppEvent(
+      state,
+      { type: 'taskProgress', sessionId: 's1', taskId: 'agent-1', outputChunk: '!', stream: 'stdout', kind: 'text' },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(next.tasksBySession.s1).toContainEqual(expect.objectContaining({ id: 'agent-task-old', text: 'OLD' }));
+    expect(next.tasksBySession.s1).toContainEqual(expect.objectContaining({ id: 'agent-1', text: 'NEW!' }));
+  });
+
+  it('does not complete terminal history when a lifecycle alias targets the active run', () => {
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        s1: [
+          {
+            ...makeSubagentTask('agent-task-old', 's1'),
+            agentId: 'agent-1',
+            status: 'completed' as const,
+            subagentPhase: 'completed' as const,
+            runInBackground: true,
+          },
+          {
+            ...makeSubagentTask('agent-1', 's1'),
+            agentId: 'agent-1',
+            runInBackground: false,
+          },
+        ],
+      },
+    };
+
+    const next = reduceAppEvent(
+      state,
+      {
+        type: 'taskCompleted',
+        sessionId: 's1',
+        taskId: 'agent-1',
+        agentId: 'agent-1',
+        status: 'completed',
+        subagentPhase: 'completed',
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(next.tasksBySession.s1).toContainEqual(
+      expect.objectContaining({ id: 'agent-task-old', status: 'completed' }),
+    );
+    expect(next.tasksBySession.s1).toContainEqual(
+      expect.objectContaining({ id: 'agent-1', status: 'completed' }),
+    );
+  });
+
+  it('does not relabel a newer detached task from a stale task id event', () => {
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        s1: [
+          {
+            ...makeSubagentTask('agent-task-new', 's1'),
+            agentId: 'agent-1',
+            runInBackground: true,
+          },
+          {
+            ...makeSubagentTask('agent-1', 's1'),
+            agentId: 'agent-1',
+            runInBackground: false,
+          },
+        ],
+      },
+    };
+
+    const next = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: {
+          ...makeSubagentTask('agent-task-old', 's1'),
+          agentId: 'agent-1',
+          runInBackground: true,
+        },
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(next.tasksBySession.s1).toEqual(state.tasksBySession.s1);
+  });
+
   it('keeps a terminal snapshot state across a late lifecycle alias', () => {
     const state = {
       ...createInitialState(),

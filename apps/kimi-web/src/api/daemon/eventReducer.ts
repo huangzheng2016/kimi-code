@@ -557,7 +557,29 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       const list = next.tasksBySession[sid] ?? [];
       const exactIndex = list.findIndex((t) => t.id === event.task.id);
-      const aliasIndex =
+      const hasOtherActiveTask =
+        event.task.agentId !== undefined &&
+        event.task.id !== event.task.agentId &&
+        list.some(
+          (t) =>
+            t.kind === 'subagent' &&
+            t.status === 'running' &&
+            t.agentId === event.task.agentId &&
+            t.id !== event.task.id &&
+            t.id !== event.task.agentId,
+        );
+      if (hasOtherActiveTask && exactIndex === -1) break;
+      const activeAliasIndex =
+        event.task.agentId === undefined
+          ? -1
+          : list.findIndex(
+              (t) =>
+                t.status === 'running' &&
+                (t.agentId === event.task.agentId ||
+                  (t.kind === 'subagent' && t.id === event.task.agentId)) &&
+                (!hasOtherActiveTask || t.id === event.task.agentId),
+            );
+      const terminalAliasIndex =
         event.task.agentId === undefined
           ? -1
           : list.findIndex(
@@ -565,13 +587,20 @@ export function reduceAppEvent(
                 t.agentId === event.task.agentId ||
                 (t.kind === 'subagent' && t.id === event.task.agentId),
             );
+      const aliasIndex =
+        activeAliasIndex !== -1
+          ? activeAliasIndex
+          : exactIndex === -1 &&
+              (event.task.subagentPhase === 'queued' || event.task.id === event.task.agentId)
+            ? terminalAliasIndex
+            : -1;
       const idx = exactIndex !== -1 ? exactIndex : aliasIndex;
       if (idx === -1) {
         next.tasksBySession[sid] = [...list, event.task];
       } else {
         const patched = [...list];
         const exact = exactIndex === -1 ? undefined : list[exactIndex];
-        const previous = aliasIndex === -1 ? list[idx]! : list[aliasIndex]!;
+        const previous = activeAliasIndex !== -1 ? list[activeAliasIndex]! : list[idx]!;
         const keepDetachedTaskId =
           previous.id !== event.task.id &&
           event.task.agentId !== undefined &&
@@ -635,7 +664,9 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       const list = next.tasksBySession[sid] ?? [];
       next.tasksBySession[sid] = list.map((t) => {
-        if (t.id !== event.taskId && t.agentId !== event.taskId) return t;
+        const exact = t.id === event.taskId;
+        const activeAlias = !exact && t.status === 'running' && t.agentId === event.taskId;
+        if (!exact && !activeAlias) return t;
         // Subagent streamed output (assistant.delta) concatenates into a single
         // growing text block rather than fragmenting each delta into its own
         // line — the detail panel renders it like a thinking block.
@@ -661,7 +692,9 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       const list = next.tasksBySession[sid] ?? [];
       next.tasksBySession[sid] = list.map((t) => {
-        if (t.id !== event.taskId && t.agentId !== event.taskId) return t;
+        const exact = t.id === event.taskId;
+        const activeAlias = !exact && t.status === 'running' && t.agentId === event.taskId;
+        if (!exact && !activeAlias) return t;
         return {
           ...t,
           id: event.agentId === undefined ? t.id : event.taskId,

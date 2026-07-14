@@ -678,6 +678,43 @@ describe('mergeSnapshotSubagents', () => {
 
     expect(merged).toEqual([resumed, oldRun]);
   });
+
+  it('removes a stale foreground alias when the roster already has the detached task id', () => {
+    const detached = subagent('agent-task-new', {
+      agentId: 'agent-1',
+      runInBackground: true,
+    });
+    const foreground = subagent('agent-1', {
+      agentId: 'agent-1',
+      runInBackground: false,
+    });
+
+    expect(mergeSnapshotSubagents([detached], [detached, foreground])).toEqual([detached]);
+  });
+
+  it('matches a running alias even when terminal history appears later in the list', () => {
+    const foreground = subagent('agent-1', {
+      agentId: 'agent-1',
+      status: 'running',
+      runInBackground: false,
+      text: 'current output',
+    });
+    const oldRun = subagent('agent-task-old', {
+      agentId: 'agent-1',
+      status: 'completed',
+      runInBackground: true,
+      text: 'old output',
+    });
+    const rosterEntry = subagent('agent-task-new', {
+      agentId: 'agent-1',
+      runInBackground: true,
+    });
+
+    const merged = mergeSnapshotSubagents([rosterEntry], [foreground, oldRun]);
+
+    expect(merged).toContainEqual(expect.objectContaining({ id: 'agent-task-new', text: 'current output' }));
+    expect(merged).toContainEqual(expect.objectContaining({ id: 'agent-task-old', text: 'old output' }));
+  });
 });
 
 describe('keepLiveSubagents', () => {
@@ -721,4 +758,5 @@ describe('keepLiveSubagents', () => {
       }),
     ]);
   });
+
 });

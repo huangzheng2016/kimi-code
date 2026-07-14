@@ -57,20 +57,21 @@ export function mergeSnapshotSubagents(
 ): AppTask[] {
   if (roster === undefined) return existing;
   const existingById = new Map(existing.map((t) => [t.id, t] as const));
-  const existingByAgentId = new Map(
-    existing
-      .filter((t) => t.kind === 'subagent')
-      .map((t) => [t.agentId ?? t.id, t] as const),
-  );
   const rosterIds = new Set(roster.map((t) => t.id));
-  const rosterAgentIds = new Set<string>();
+  const rosterAliasIds = new Set<string>();
   const merged = roster.map((task) => {
     const byId = existingById.get(task.id);
-    const byAgentId = task.agentId === undefined ? undefined : existingByAgentId.get(task.agentId);
     const aliasMatch =
-      byId === undefined && byAgentId?.status === 'running' ? byAgentId : undefined;
-    const live = byId ?? aliasMatch;
-    if (aliasMatch !== undefined && task.agentId !== undefined) rosterAgentIds.add(task.agentId);
+      task.agentId === undefined
+        ? undefined
+        : existing.find(
+            (t) =>
+              t.kind === 'subagent' &&
+              t.status === 'running' &&
+              (t.agentId === task.agentId || t.id === task.agentId),
+          );
+    const live = aliasMatch ?? byId;
+    if (aliasMatch !== undefined && aliasMatch.id !== task.id) rosterAliasIds.add(aliasMatch.id);
     if (!live) return task;
     return { ...task, outputLines: live.outputLines, text: live.text };
   });
@@ -78,7 +79,7 @@ export function mergeSnapshotSubagents(
     (t) =>
       (t.kind !== 'subagent' || t.runInBackground === true) &&
       !rosterIds.has(t.id) &&
-      !rosterAgentIds.has(t.agentId ?? t.id),
+      !rosterAliasIds.has(t.id),
   );
   if (merged.length === 0 && kept.length === existing.length) return existing;
   return kept.length === 0 ? merged : [...merged, ...kept];
