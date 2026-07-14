@@ -322,6 +322,15 @@ describe('detached Agent task projection', () => {
     ).toEqual([]);
   });
 
+  it('drops projector members omitted by an authoritative snapshot', () => {
+    const projector = createAgentProjector();
+    projector.project('subagent.spawned', { subagentId: 'agent-1' }, 's1');
+    projector.seedSubagents('s1', []);
+
+    expect(projector.project('subagent.started', { subagentId: 'agent-1' }, 's1')).toEqual([]);
+    expect(projector.project('assistant.delta', { agentId: 'agent-1', delta: 'late' }, 's1')).toEqual([]);
+  });
+
   it('keeps legacy lifecycle recovery when an older snapshot omits the roster', () => {
     const projector = createAgentProjector();
     projector.seedSubagents('s1', undefined);

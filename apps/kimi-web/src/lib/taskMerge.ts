@@ -38,7 +38,7 @@ export function keepLiveSubagents(restBased: AppTask[], existing: AppTask[]): Ap
   const liveSubagents = existing.filter(
     (t) =>
       t.kind === 'subagent' &&
-      t.runInBackground !== true &&
+      (t.runInBackground !== true || t.status === 'running') &&
       !restIds.has(t.id),
   );
   return liveSubagents.length === 0 ? mergedRest : [...mergedRest, ...liveSubagents];

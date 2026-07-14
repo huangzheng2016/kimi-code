@@ -617,6 +617,7 @@ export function createAgentProjector(): AgentProjector {
     const s = getOrCreate(sessionId);
     s.subagentRosterAuthoritative = tasks !== undefined;
     if (tasks === undefined) return;
+    s.subagentMeta.clear();
     for (const task of tasks) {
       if (task.kind !== 'subagent') continue;
       s.subagentMeta.set(task.agentId ?? task.id, task);
