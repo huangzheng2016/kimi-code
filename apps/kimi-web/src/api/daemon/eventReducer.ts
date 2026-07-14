@@ -556,20 +556,49 @@ export function reduceAppEvent(
     case 'taskCreated': {
       const sid = event.sessionId;
       const list = next.tasksBySession[sid] ?? [];
-      const idx = list.findIndex((t) => t.id === event.task.id);
+      const exactIndex = list.findIndex((t) => t.id === event.task.id);
+      const aliasIndex =
+        event.task.agentId === undefined
+          ? -1
+          : list.findIndex(
+              (t) =>
+                t.agentId === event.task.agentId ||
+                (t.kind === 'subagent' && t.id === event.task.agentId),
+            );
+      const idx = exactIndex !== -1 ? exactIndex : aliasIndex;
       if (idx === -1) {
         next.tasksBySession[sid] = [...list, event.task];
       } else {
         const patched = [...list];
-        const previous = list[idx]!;
+        const exact = exactIndex === -1 ? undefined : list[exactIndex];
+        const previous = aliasIndex === -1 ? list[idx]! : list[aliasIndex]!;
+        const keepDetachedTaskId =
+          previous.id !== event.task.id &&
+          event.task.agentId !== undefined &&
+          previous.agentId === event.task.agentId &&
+          event.task.id === event.task.agentId &&
+          event.task.subagentPhase !== 'queued';
+        const keepTerminalState =
+          previous.kind === 'subagent' &&
+          previous.status !== 'running' &&
+          event.task.subagentPhase !== 'queued' &&
+          (event.task.status === 'running' || event.task.id === event.task.agentId);
         // The projected task does not carry reducer-owned accumulated progress;
         // preserve it across the replacement so subagent output keeps growing.
         // A resync also rebuilds skeleton tasks without their identity metadata,
         // so keep the previous value when the projected task omits it.
         patched[idx] = {
           ...event.task,
-          outputLines: previous.outputLines,
-          text: previous.text,
+          id: keepDetachedTaskId ? previous.id : event.task.id,
+          agentId: event.task.agentId ?? previous.agentId,
+          status: keepTerminalState ? previous.status : event.task.status,
+          completedAt: keepTerminalState ? previous.completedAt : event.task.completedAt,
+          outputPreview: keepTerminalState
+            ? previous.outputPreview
+            : (event.task.outputPreview ?? exact?.outputPreview ?? previous.outputPreview),
+          outputBytes: event.task.outputBytes ?? exact?.outputBytes ?? previous.outputBytes,
+          outputLines: previous.outputLines ?? exact?.outputLines,
+          text: previous.text ?? exact?.text,
           // A post-refresh lifecycle event re-projects the task with skeleton
           // metadata; don't let its placeholder clobber the roster-seeded
           // description.
@@ -581,9 +610,22 @@ export function reduceAppEvent(
           swarmIndex: event.task.swarmIndex ?? previous.swarmIndex,
           parentToolCallId: event.task.parentToolCallId ?? previous.parentToolCallId,
           subagentType: event.task.subagentType ?? previous.subagentType,
+          subagentPhase: keepTerminalState
+            ? previous.subagentPhase
+            : (event.task.subagentPhase ?? previous.subagentPhase),
+          suspendedReason: keepTerminalState
+            ? previous.suspendedReason
+            : event.task.suspendedReason,
           runInBackground: event.task.runInBackground ?? previous.runInBackground,
         };
-        next.tasksBySession[sid] = patched;
+        const duplicateIndex =
+          exactIndex !== -1 && aliasIndex !== -1 && exactIndex !== aliasIndex
+            ? aliasIndex
+            : -1;
+        next.tasksBySession[sid] =
+          duplicateIndex === -1
+            ? patched
+            : patched.filter((_task, index) => index !== duplicateIndex);
       }
       break;
     }
@@ -593,7 +635,7 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       const list = next.tasksBySession[sid] ?? [];
       next.tasksBySession[sid] = list.map((t) => {
-        if (t.id !== event.taskId) return t;
+        if (t.id !== event.taskId && t.agentId !== event.taskId) return t;
         // Subagent streamed output (assistant.delta) concatenates into a single
         // growing text block rather than fragmenting each delta into its own
         // line — the detail panel renders it like a thinking block.
@@ -619,12 +661,17 @@ export function reduceAppEvent(
       const sid = event.sessionId;
       const list = next.tasksBySession[sid] ?? [];
       next.tasksBySession[sid] = list.map((t) => {
-        if (t.id !== event.taskId) return t;
+        if (t.id !== event.taskId && t.agentId !== event.taskId) return t;
         return {
           ...t,
+          id: event.agentId === undefined ? t.id : event.taskId,
+          agentId: event.agentId ?? t.agentId,
           status: event.status,
-          outputPreview: event.outputPreview,
-          outputBytes: event.outputBytes,
+          subagentPhase: event.subagentPhase ?? t.subagentPhase,
+          completedAt: event.completedAt ?? t.completedAt,
+          runInBackground: event.runInBackground ?? t.runInBackground,
+          outputPreview: event.outputPreview ?? t.outputPreview,
+          outputBytes: event.outputBytes ?? t.outputBytes,
         };
       });
       break;

@@ -115,7 +115,8 @@ describe('rest/snapshot — session snapshot', () => {
       in_flight_turn: null,
       subagents: [
         {
-          id: 'agent_1',
+          id: 'agent-task-1',
+          agent_id: 'agent_1',
           session_id: 'sess_1',
           kind: 'subagent',
           description: 'explore the auth flow',
@@ -147,6 +148,7 @@ describe('rest/snapshot — session snapshot', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.subagents).toHaveLength(2);
+      expect(result.data.subagents?.[0]?.agent_id).toBe('agent_1');
       expect(result.data.subagents?.[0]?.parent_tool_call_id).toBe('call_1');
       expect(result.data.subagents?.[1]?.subagent_phase).toBe('completed');
     }

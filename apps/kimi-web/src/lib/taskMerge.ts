@@ -17,15 +17,39 @@ import type { AppTask } from '../api/types';
  */
 export function keepLiveSubagents(restBased: AppTask[], existing: AppTask[]): AppTask[] {
   const restIds = new Set(restBased.map((t) => t.id));
-  const liveSubagents = existing.filter((t) => t.kind === 'subagent' && !restIds.has(t.id));
-  return liveSubagents.length === 0 ? restBased : [...restBased, ...liveSubagents];
+  const existingById = new Map(existing.map((t) => [t.id, t] as const));
+  const mergedRest = restBased.map((task) => {
+    const live = existingById.get(task.id);
+    if (task.kind !== 'subagent' || live?.kind !== 'subagent') return task;
+    return {
+      ...live,
+      ...task,
+      agentId: task.agentId ?? live.agentId,
+      subagentPhase: task.subagentPhase ?? live.subagentPhase,
+      subagentType: task.subagentType ?? live.subagentType,
+      parentToolCallId: task.parentToolCallId ?? live.parentToolCallId,
+      suspendedReason: task.suspendedReason ?? live.suspendedReason,
+      swarmIndex: task.swarmIndex ?? live.swarmIndex,
+      runInBackground: task.runInBackground ?? live.runInBackground,
+      outputLines: live.outputLines,
+      text: live.text,
+    };
+  });
+  const liveSubagents = existing.filter(
+    (t) =>
+      t.kind === 'subagent' &&
+      t.runInBackground !== true &&
+      !restIds.has(t.id),
+  );
+  return liveSubagents.length === 0 ? mergedRest : [...mergedRest, ...liveSubagents];
 }
 
 /**
  * Seed the task store from the snapshot's subagent roster. When present, the
- * roster is authoritative for all subagents, while reducer-owned accumulated
- * output (outputLines/text) and non-subagent tasks survive the seed. Older
- * servers omit the roster, so `undefined` keeps the existing store unchanged.
+ * roster is authoritative for roster-owned subagents, while reducer-owned
+ * accumulated output (outputLines/text), non-subagent tasks, and detached
+ * REST-backed subagents survive the seed. Older servers omit the roster, so
+ * `undefined` keeps the existing store unchanged.
  */
 export function mergeSnapshotSubagents(
   roster: AppTask[] | undefined,
@@ -33,13 +57,29 @@ export function mergeSnapshotSubagents(
 ): AppTask[] {
   if (roster === undefined) return existing;
   const existingById = new Map(existing.map((t) => [t.id, t] as const));
+  const existingByAgentId = new Map(
+    existing
+      .filter((t) => t.kind === 'subagent')
+      .map((t) => [t.agentId ?? t.id, t] as const),
+  );
   const rosterIds = new Set(roster.map((t) => t.id));
+  const rosterAgentIds = new Set<string>();
   const merged = roster.map((task) => {
-    const live = existingById.get(task.id);
+    const byId = existingById.get(task.id);
+    const byAgentId = task.agentId === undefined ? undefined : existingByAgentId.get(task.agentId);
+    const aliasMatch =
+      byId === undefined && byAgentId?.status === 'running' ? byAgentId : undefined;
+    const live = byId ?? aliasMatch;
+    if (aliasMatch !== undefined && task.agentId !== undefined) rosterAgentIds.add(task.agentId);
     if (!live) return task;
     return { ...task, outputLines: live.outputLines, text: live.text };
   });
-  const kept = existing.filter((t) => t.kind !== 'subagent' && !rosterIds.has(t.id));
+  const kept = existing.filter(
+    (t) =>
+      (t.kind !== 'subagent' || t.runInBackground === true) &&
+      !rosterIds.has(t.id) &&
+      !rosterAgentIds.has(t.agentId ?? t.id),
+  );
   if (merged.length === 0 && kept.length === existing.length) return existing;
   return kept.length === 0 ? merged : [...merged, ...kept];
 }

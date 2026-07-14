@@ -9,7 +9,7 @@ import { buildDiffLines } from '../src/lib/diffLines';
 import { buildEditDiffLines } from '../src/lib/toolDiff';
 import { createCoalescedAsyncRunner } from '../src/lib/snapshotSync';
 import { mergeSnapshotMessages } from '../src/lib/snapshotMessages';
-import { mergeSnapshotSubagents } from '../src/lib/taskMerge';
+import { keepLiveSubagents, mergeSnapshotSubagents } from '../src/lib/taskMerge';
 import { normalizeToolName, toolSummary } from '../src/lib/toolMeta';
 import { collapsePrompt, humanizeCron } from '../src/lib/cronHumanize';
 import {
@@ -633,6 +633,15 @@ describe('mergeSnapshotSubagents', () => {
     expect(merged).toEqual([background]);
   });
 
+  it('keeps a REST-backed detached subagent when the authoritative roster is empty', () => {
+    const detached = subagent('agent-task-1', {
+      agentId: 'agent-1',
+      status: 'completed',
+      runInBackground: true,
+    });
+    expect(mergeSnapshotSubagents([], [detached])).toEqual([detached]);
+  });
+
   it('keeps existing tasks when an older snapshot omits the roster', () => {
     const existing = [subagent('a1')];
     expect(mergeSnapshotSubagents(undefined, existing)).toBe(existing);
@@ -650,5 +659,66 @@ describe('mergeSnapshotSubagents', () => {
     const roster = [subagent('current')];
     const merged = mergeSnapshotSubagents(roster, [subagent('stale'), background]);
     expect(merged).toEqual([roster[0], background]);
+  });
+
+  it('does not merge a previous detached run into a resumed same-agent roster entry', () => {
+    const oldRun = subagent('agent-task-old', {
+      agentId: 'agent-1',
+      status: 'completed',
+      runInBackground: true,
+      text: 'old run output',
+    });
+    const resumed = subagent('agent-1', {
+      agentId: 'agent-1',
+      subagentPhase: 'queued',
+      runInBackground: false,
+    });
+
+    const merged = mergeSnapshotSubagents([resumed], [oldRun]);
+
+    expect(merged).toEqual([resumed, oldRun]);
+  });
+});
+
+describe('keepLiveSubagents', () => {
+  it('keeps snapshot identity while REST refreshes a detached subagent', () => {
+    const snapshot: AppTask = {
+      id: 'agent-task-1',
+      agentId: 'agent-1',
+      sessionId: 's1',
+      kind: 'subagent',
+      description: 'Review files',
+      status: 'running',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      subagentPhase: 'working',
+      subagentType: 'explore',
+      parentToolCallId: 'call-1',
+      swarmIndex: 0,
+      runInBackground: true,
+      outputLines: ['working'],
+    };
+    const rest: AppTask = {
+      id: 'agent-task-1',
+      sessionId: 's1',
+      kind: 'subagent',
+      description: 'Review files',
+      status: 'completed',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      completedAt: '2026-01-01T00:01:00.000Z',
+      runInBackground: true,
+    };
+
+    expect(keepLiveSubagents([rest], [snapshot])).toEqual([
+      expect.objectContaining({
+        id: 'agent-task-1',
+        agentId: 'agent-1',
+        status: 'completed',
+        subagentPhase: 'working',
+        subagentType: 'explore',
+        parentToolCallId: 'call-1',
+        swarmIndex: 0,
+        outputLines: ['working'],
+      }),
+    ]);
   });
 });

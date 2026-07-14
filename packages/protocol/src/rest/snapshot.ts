@@ -66,6 +66,8 @@ export type InFlightTurn = z.infer<typeof inFlightTurnSchema>;
  * (non-replayed) `subagent.spawned` WS event.
  */
 export const snapshotSubagentSchema = taskSchema.extend({
+  /** Stable agent identity used by subagent lifecycle events after a task detaches. */
+  agent_id: z.string().optional(),
   subagent_phase: z.enum(['queued', 'working', 'suspended', 'completed', 'failed']).optional(),
   subagent_type: z.string().optional(),
   parent_tool_call_id: z.string().optional(),

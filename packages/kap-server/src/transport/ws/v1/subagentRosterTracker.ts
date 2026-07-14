@@ -32,6 +32,7 @@ export class SubagentRosterTracker {
         }
         roster.set(event.subagentId, {
           id: event.subagentId,
+          agent_id: event.subagentId,
           session_id: sessionId,
           kind: 'subagent',
           description: event.description ?? event.subagentName ?? 'Sub Agent',
@@ -68,6 +69,9 @@ export class SubagentRosterTracker {
         if (agentId === undefined) return;
         const entry = this.runningEntry(sessionId, agentId);
         if (!entry) return;
+        if (entry.id !== agentId && entry.id !== event.info.taskId) return;
+        entry.id = event.info.taskId;
+        entry.agent_id = agentId;
         entry.run_in_background = true;
         return;
       }
@@ -77,6 +81,10 @@ export class SubagentRosterTracker {
         if (agentId === undefined) return;
         const entry = this.bySession.get(sessionId)?.get(agentId);
         if (!entry) return;
+        if (entry.id !== event.info.taskId) return;
+        entry.id = event.info.taskId;
+        entry.agent_id = agentId;
+        entry.run_in_background = true;
         entry.status =
           event.info.status === 'completed'
             ? 'completed'

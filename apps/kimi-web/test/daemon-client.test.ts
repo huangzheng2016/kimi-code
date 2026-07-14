@@ -133,4 +133,32 @@ describe('DaemonKimiWebApi.getSessionSnapshot', () => {
 
     expect(snapshot.subagents).toEqual([]);
   });
+
+  it('maps the task resource id and stable agent id from a detached roster entry', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      envelope({
+        ...WIRE_SESSION_SNAPSHOT,
+        subagents: [
+          {
+            id: 'agent-task-1',
+            agent_id: 'agent-1',
+            session_id: 'sess_1',
+            kind: 'subagent',
+            description: 'Review files',
+            status: 'running',
+            created_at: '2026-01-01T00:00:00.000Z',
+            run_in_background: true,
+          },
+        ],
+      }),
+    );
+
+    const snapshot = await createApi().getSessionSnapshot('sess_1');
+
+    expect(snapshot.subagents?.[0]).toMatchObject({
+      id: 'agent-task-1',
+      agentId: 'agent-1',
+      runInBackground: true,
+    });
+  });
 });

@@ -39,6 +39,18 @@ function taskTerminated(status: string, agentId = 'agent_1'): Event {
   });
 }
 
+function taskStarted(agentId = 'agent_1'): Event {
+  return ev({
+    type: 'task.started',
+    info: {
+      taskId: `task-${agentId}`,
+      kind: 'agent',
+      agentId,
+      status: 'running',
+    },
+  });
+}
+
 describe('SubagentRosterTracker', () => {
   it('records the full swarm identity on spawn', () => {
     const t = new SubagentRosterTracker();
@@ -88,7 +100,7 @@ describe('SubagentRosterTracker', () => {
     expect(resumed.suspended_reason).toBeUndefined();
   });
 
-  it('marks a foreground subagent as background when its Agent task detaches', () => {
+  it('uses the background task id when a foreground subagent detaches', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawned());
     t.apply(
@@ -103,7 +115,11 @@ describe('SubagentRosterTracker', () => {
         },
       }),
     );
-    expect(t.get(SID)[0]?.run_in_background).toBe(true);
+    expect(t.get(SID)[0]).toMatchObject({
+      id: 'agent-task-1',
+      agent_id: 'agent_1',
+      run_in_background: true,
+    });
   });
 
   it.each([
@@ -115,8 +131,11 @@ describe('SubagentRosterTracker', () => {
   ] as const)('maps Agent task terminal status %s into the snapshot', (taskStatus, status, phase) => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawned());
+    t.apply(SID, taskStarted());
     t.apply(SID, taskTerminated(taskStatus));
     expect(t.get(SID)[0]).toMatchObject({
+      id: 'task-agent_1',
+      agent_id: 'agent_1',
       status,
       subagent_phase: phase,
       completed_at: '2023-11-14T22:13:20.000Z',
@@ -126,6 +145,7 @@ describe('SubagentRosterTracker', () => {
   it('keeps a killed task terminal when subagent.completed arrives late', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawned());
+    t.apply(SID, taskStarted());
     t.apply(SID, taskTerminated('killed'));
     const terminal = t.get(SID)[0];
 
@@ -137,6 +157,7 @@ describe('SubagentRosterTracker', () => {
   it.each(['timed_out', 'lost'])('keeps %s terminal across late lifecycle events', (status) => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawned());
+    t.apply(SID, taskStarted());
     t.apply(SID, taskTerminated(status));
     const terminal = t.get(SID)[0];
 
@@ -158,13 +179,14 @@ describe('SubagentRosterTracker', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawned());
     t.apply(SID, spawned({ subagentId: 'agent_2', swarmIndex: 1 }));
+    t.apply(SID, taskStarted());
     t.apply(SID, taskTerminated('killed'));
 
     t.apply(SID, ev({ type: 'subagent.started', subagentId: 'agent_2' }));
     t.apply(SID, ev({ type: 'subagent.completed', subagentId: 'ghost', resultSummary: 'late' }));
 
     expect(t.get(SID)).toMatchObject([
-      { id: 'agent_1', status: 'cancelled', subagent_phase: 'failed' },
+      { id: 'task-agent_1', agent_id: 'agent_1', status: 'cancelled', subagent_phase: 'failed' },
       { id: 'agent_2', status: 'running', subagent_phase: 'working' },
     ]);
   });
@@ -172,6 +194,7 @@ describe('SubagentRosterTracker', () => {
   it('lets a new spawn reset a terminal entry with the same agent id', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawned());
+    t.apply(SID, taskStarted());
     t.apply(SID, taskTerminated('killed'));
 
     t.apply(SID, spawned({ description: 'new run', runInBackground: false }));
@@ -181,6 +204,45 @@ describe('SubagentRosterTracker', () => {
       description: 'new run',
       status: 'running',
       subagent_phase: 'queued',
+      run_in_background: false,
+    });
+  });
+
+  it('ignores an old task termination after the same agent id starts a new run', () => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawned());
+    t.apply(
+      SID,
+      ev({
+        type: 'task.started',
+        info: { taskId: 'old-task', kind: 'agent', agentId: 'agent_1' },
+      }),
+    );
+    t.apply(SID, ev({ type: 'subagent.completed', subagentId: 'agent_1', resultSummary: 'done' }));
+    t.apply(SID, spawned({ description: 'new run', runInBackground: false }));
+    t.apply(
+      SID,
+      ev({ type: 'subagent.completed', subagentId: 'agent_1', resultSummary: 'new done' }),
+    );
+
+    t.apply(
+      SID,
+      ev({
+        type: 'task.terminated',
+        info: {
+          taskId: 'old-task',
+          kind: 'agent',
+          agentId: 'agent_1',
+          status: 'killed',
+          endedAt: 1_700_000_000_000,
+        },
+      }),
+    );
+
+    expect(t.get(SID)[0]).toMatchObject({
+      id: 'agent_1',
+      status: 'completed',
+      description: 'new run',
       run_in_background: false,
     });
   });

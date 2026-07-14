@@ -386,7 +386,8 @@ describe('SessionEventBroadcaster', () => {
     const detached = await bc.getSnapshotState('s1');
     expect(detached.subagents).toMatchObject([
       {
-        id: 'agent_1',
+        id: 'agent-task-1',
+        agent_id: 'agent_1',
         status: 'running',
         run_in_background: true,
       },
@@ -411,7 +412,8 @@ describe('SessionEventBroadcaster', () => {
     const stopped = await bc.getSnapshotState('s1');
     expect(stopped.subagents).toMatchObject([
       {
-        id: 'agent_1',
+        id: 'agent-task-1',
+        agent_id: 'agent_1',
         status: 'cancelled',
         subagent_phase: 'failed',
         run_in_background: true,
@@ -448,6 +450,20 @@ describe('SessionEventBroadcaster', () => {
           runInBackground: true,
         }),
       );
+      main.bus.emit(
+        agentEvent('task.started', {
+          info: {
+            taskId: 'agent-task-1',
+            kind: 'agent',
+            agentId: 'agent_1',
+            description: 'inspect terminal ordering',
+            status: 'running',
+            detached: true,
+            startedAt: Date.now(),
+            endedAt: null,
+          },
+        }),
+      );
       if (subagentEvent === 'subagent.completed') {
         main.bus.emit(
           agentEvent(subagentEvent, {
@@ -481,7 +497,8 @@ describe('SessionEventBroadcaster', () => {
       const snapshot = await bc.getSnapshotState('s1');
       expect(snapshot.subagents).toMatchObject([
         {
-          id: 'agent_1',
+          id: 'agent-task-1',
+          agent_id: 'agent_1',
           status,
           subagent_phase: phase,
         },

@@ -66,6 +66,143 @@ describe('subagent streaming text', () => {
   });
 });
 
+describe('detached Agent task projection', () => {
+  it('keeps a detached Agent as one subagent keyed by its task resource id', () => {
+    const projector = createAgentProjector();
+    projector.project(
+      'subagent.spawned',
+      { subagentId: 'agent-1', description: 'Review files', runInBackground: false },
+      's1',
+    );
+
+    const events = projector.project(
+      'task.started',
+      {
+        info: {
+          taskId: 'agent-task-1',
+          agentId: 'agent-1',
+          kind: 'agent',
+          status: 'running',
+          startedAt: 1_700_000_000_000,
+        },
+      },
+      's1',
+    );
+
+    expect(events).toEqual([
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: expect.objectContaining({
+          id: 'agent-task-1',
+          agentId: 'agent-1',
+          kind: 'subagent',
+          runInBackground: true,
+        }),
+      },
+    ]);
+  });
+
+  it('keeps the task resource id on later subagent lifecycle events', () => {
+    const projector = createAgentProjector();
+    projector.project('subagent.spawned', { subagentId: 'agent-1' }, 's1');
+    projector.project(
+      'task.started',
+      { info: { taskId: 'agent-task-1', agentId: 'agent-1', kind: 'agent' } },
+      's1',
+    );
+
+    const events = projector.project(
+      'subagent.completed',
+      { subagentId: 'agent-1', resultSummary: 'done' },
+      's1',
+    );
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'taskCreated',
+        task: expect.objectContaining({
+          id: 'agent-task-1',
+          status: 'completed',
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    ['completed', 'completed', 'completed'],
+    ['failed', 'failed', 'failed'],
+    ['timed_out', 'failed', 'failed'],
+    ['killed', 'cancelled', 'failed'],
+    ['lost', 'failed', 'failed'],
+  ] as const)('maps Agent task terminal status %s', (taskStatus, status, phase) => {
+    const projector = createAgentProjector();
+    projector.project('subagent.spawned', { subagentId: 'agent-1' }, 's1');
+
+    const events = projector.project(
+      'task.terminated',
+      {
+        info: {
+          taskId: 'agent-task-1',
+          agentId: 'agent-1',
+          kind: 'agent',
+          status: taskStatus,
+          endedAt: 1_700_000_000_000,
+        },
+      },
+      's1',
+    );
+
+    expect(events).toEqual([
+      {
+        type: 'taskCompleted',
+        sessionId: 's1',
+        taskId: 'agent-task-1',
+        agentId: 'agent-1',
+        status,
+        subagentPhase: phase,
+        completedAt: '2023-11-14T22:13:20.000Z',
+        runInBackground: true,
+      },
+    ]);
+  });
+
+  it('does not let late ordinary lifecycle events reopen a terminated Agent', () => {
+    const projector = createAgentProjector();
+    projector.project('subagent.spawned', { subagentId: 'agent-1' }, 's1');
+    projector.project(
+      'task.started',
+      { info: { taskId: 'agent-task-1', agentId: 'agent-1', kind: 'agent' } },
+      's1',
+    );
+    const stopped = projector.project(
+      'task.terminated',
+      {
+        info: {
+          taskId: 'agent-task-1',
+          agentId: 'agent-1',
+          kind: 'agent',
+          status: 'killed',
+          endedAt: 1_700_000_000_000,
+        },
+      },
+      's1',
+    );
+    expect(stopped).toContainEqual(
+      expect.objectContaining({ type: 'taskCompleted', status: 'cancelled' }),
+    );
+
+    expect(projector.project('task.started', { info: { taskId: 'agent-task-1', agentId: 'agent-1', kind: 'agent' } }, 's1')).toContainEqual(
+      expect.objectContaining({
+        type: 'taskCreated',
+        task: expect.objectContaining({ id: 'agent-task-1', status: 'cancelled' }),
+      }),
+    );
+    expect(projector.project('subagent.completed', { subagentId: 'agent-1', resultSummary: 'late' }, 's1')).toEqual([]);
+    expect(projector.project('subagent.started', { subagentId: 'agent-1' }, 's1')).toEqual([]);
+  });
+});
+
 describe('agent error projection', () => {
   it('drops a subagent error instead of surfacing it as a session warning', () => {
     const projector = createAgentProjector();

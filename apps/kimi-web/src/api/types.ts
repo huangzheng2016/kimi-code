@@ -307,6 +307,8 @@ export type AppSubagentPhase = 'queued' | 'working' | 'suspended' | 'completed' 
 
 export interface AppTask {
   id: string;
+  /** Stable child-agent identity when `id` is a detached background task ID. */
+  agentId?: string;
   sessionId: string;
   kind: 'subagent' | 'bash' | 'tool';
   description: string;
@@ -446,7 +448,18 @@ export type AppEvent =
        */
       kind?: 'line' | 'text';
     }
-  | { type: 'taskCompleted'; sessionId: string; taskId: string; status: AppTaskStatus; outputPreview?: string; outputBytes?: number }
+  | {
+      type: 'taskCompleted';
+      sessionId: string;
+      taskId: string;
+      agentId?: string;
+      status: AppTaskStatus;
+      subagentPhase?: AppSubagentPhase;
+      completedAt?: string;
+      runInBackground?: boolean;
+      outputPreview?: string;
+      outputBytes?: number;
+    }
   | { type: 'goalUpdated'; sessionId: string; goal: AppGoal | null }
   | { type: 'configChanged'; changedFields: string[]; config: AppConfig }
   | {

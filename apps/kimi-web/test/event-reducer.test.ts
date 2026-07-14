@@ -266,6 +266,160 @@ describe('reduceAppEvent taskProgress', () => {
     });
   });
 
+  it('keeps the detached task id when lifecycle events use the stable agent id', () => {
+    const detached = {
+      ...makeSubagentTask('agent-task-1', 's1'),
+      agentId: 'agent-1',
+      parentToolCallId: 'call-1',
+      runInBackground: true,
+    };
+    const state = {
+      ...createInitialState(),
+      tasksBySession: { 's1': [detached] },
+    };
+
+    const afterLifecycle = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: {
+          ...makeSubagentTask('agent-1', 's1'),
+          agentId: 'agent-1',
+          subagentPhase: 'working',
+        },
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+    const afterProgress = reduceAppEvent(
+      afterLifecycle,
+      {
+        type: 'taskProgress',
+        sessionId: 's1',
+        taskId: 'agent-1',
+        outputChunk: 'working',
+        stream: 'stdout',
+      },
+      { sessionId: 's1', seq: 2 },
+    );
+
+    expect(afterProgress.tasksBySession.s1).toHaveLength(1);
+    expect(afterProgress.tasksBySession.s1?.[0]).toMatchObject({
+      id: 'agent-task-1',
+      agentId: 'agent-1',
+      parentToolCallId: 'call-1',
+      outputLines: ['working'],
+    });
+  });
+
+  it('replaces the foreground agent id with the task resource id on detach', () => {
+    const foreground = {
+      ...makeSubagentTask('agent-1', 's1'),
+      agentId: 'agent-1',
+      parentToolCallId: 'call-1',
+      runInBackground: false,
+    };
+    const state = {
+      ...createInitialState(),
+      tasksBySession: { 's1': [foreground] },
+    };
+
+    const next = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: {
+          ...foreground,
+          id: 'agent-task-1',
+          runInBackground: true,
+        },
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(next.tasksBySession.s1).toHaveLength(1);
+    expect(next.tasksBySession.s1?.[0]).toMatchObject({
+      id: 'agent-task-1',
+      agentId: 'agent-1',
+      parentToolCallId: 'call-1',
+      runInBackground: true,
+    });
+  });
+
+  it('collapses a REST task row and a foreground alias when the detach event arrives', () => {
+    const restTask = makeSubagentTask('agent-task-1', 's1');
+    const foreground = {
+      ...makeSubagentTask('agent-1', 's1'),
+      agentId: 'agent-1',
+      parentToolCallId: 'call-1',
+    };
+    const state = {
+      ...createInitialState(),
+      tasksBySession: { 's1': [restTask, foreground] },
+    };
+
+    const next = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: {
+          ...restTask,
+          agentId: 'agent-1',
+          runInBackground: true,
+        },
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(next.tasksBySession.s1).toHaveLength(1);
+    expect(next.tasksBySession.s1?.[0]).toMatchObject({
+      id: 'agent-task-1',
+      agentId: 'agent-1',
+      parentToolCallId: 'call-1',
+      runInBackground: true,
+    });
+  });
+
+  it('keeps a terminal snapshot state across a late lifecycle alias', () => {
+    const state = {
+      ...createInitialState(),
+      tasksBySession: {
+        's1': [
+          {
+            ...makeSubagentTask('agent-task-1', 's1'),
+            agentId: 'agent-1',
+            status: 'cancelled' as const,
+            subagentPhase: 'failed' as const,
+            runInBackground: true,
+          },
+        ],
+      },
+    };
+
+    const next = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: {
+          ...makeSubagentTask('agent-1', 's1'),
+          agentId: 'agent-1',
+          status: 'completed',
+          subagentPhase: 'completed',
+        },
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    expect(next.tasksBySession.s1?.[0]).toMatchObject({
+      id: 'agent-task-1',
+      status: 'cancelled',
+      subagentPhase: 'failed',
+    });
+  });
+
   it('keeps the roster-seeded description when a re-projected task carries the placeholder', () => {
     // After a page refresh the snapshot roster seeds the real description; a
     // later subagent.* lifecycle event re-projects the task with the

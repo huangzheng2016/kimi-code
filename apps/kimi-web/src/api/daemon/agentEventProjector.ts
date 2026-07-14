@@ -203,6 +203,7 @@ function patchSubagent(
   if (typeof subagentId !== 'string' || subagentId.length === 0) return null;
   const prev = state.subagentMeta.get(subagentId) ?? {
     id: subagentId,
+    agentId: subagentId,
     sessionId,
     kind: 'subagent',
     description: 'Sub Agent',
@@ -210,9 +211,28 @@ function patchSubagent(
     createdAt: new Date().toISOString(),
     subagentPhase: 'queued',
   } satisfies AppTask;
-  const next: AppTask = { ...prev, ...patch, id: subagentId, sessionId, kind: 'subagent' };
+  const next: AppTask = {
+    ...prev,
+    ...patch,
+    id: patch.id ?? prev.id,
+    agentId: subagentId,
+    sessionId,
+    kind: 'subagent',
+  };
   state.subagentMeta.set(subagentId, next);
   return next;
+}
+
+function patchRunningSubagent(
+  state: SessionState,
+  sessionId: string,
+  subagentId: unknown,
+  patch: Partial<AppTask>,
+): AppTask | null {
+  if (typeof subagentId !== 'string' || subagentId.length === 0) return null;
+  const current = state.subagentMeta.get(subagentId);
+  if (current !== undefined && current.status !== 'running') return null;
+  return patchSubagent(state, sessionId, subagentId, patch);
 }
 
 export function subagentProgressText(rawType: string, payload: Record<string, unknown>): string | null {
@@ -289,36 +309,44 @@ function projectSubagentProgress(
     // taskProgress to existing tasks — without this, the deltas are dropped and
     // the live detail stays blank until a non-text frame recreates the task.
     const previous = state.subagentMeta.get(subagentId);
-    const task = patchSubagent(state, sessionId, subagentId, {
+    const task = patchRunningSubagent(state, sessionId, subagentId, {
       status: 'running',
       subagentPhase: 'working',
       startedAt: previous?.startedAt ?? new Date().toISOString(),
     });
-    const out: AppEvent[] = [];
-    if (task) out.push({ type: 'taskCreated', sessionId, task });
-    out.push({
-      type: 'taskProgress',
-      sessionId,
-      taskId: subagentId,
-      outputChunk: delta,
-      stream: 'stdout',
-      kind: 'text',
-    });
-    return out;
+    if (!task) return [];
+    return [
+      { type: 'taskCreated', sessionId, task },
+      {
+        type: 'taskProgress',
+        sessionId,
+        taskId: task.id,
+        outputChunk: delta,
+        stream: 'stdout',
+        kind: 'text',
+      },
+    ];
   }
 
   const text = subagentProgressText(rawType, payload);
   if (text === null || text.length === 0) return [];
   const previous = state.subagentMeta.get(subagentId);
-  const task = patchSubagent(state, sessionId, subagentId, {
+  const task = patchRunningSubagent(state, sessionId, subagentId, {
     status: 'running',
     subagentPhase: 'working',
     startedAt: previous?.startedAt ?? new Date().toISOString(),
   });
-  const out: AppEvent[] = [];
-  if (task) out.push({ type: 'taskCreated', sessionId, task });
-  out.push({ type: 'taskProgress', sessionId, taskId: subagentId, outputChunk: text, stream: 'stdout' });
-  return out;
+  if (!task) return [];
+  return [
+    { type: 'taskCreated', sessionId, task },
+    {
+      type: 'taskProgress',
+      sessionId,
+      taskId: task.id,
+      outputChunk: text,
+      stream: 'stdout',
+    },
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,6 +1032,7 @@ export function createAgentProjector(): AgentProjector {
         const taskId = typeof p?.subagentId === 'string' && p.subagentId.length > 0 ? p.subagentId : ulid('task_');
         const task: AppTask = {
           id: taskId,
+          agentId: taskId,
           sessionId,
           kind: 'subagent',
           description: typeof p?.description === 'string' ? p.description : p?.subagentName ?? 'Sub Agent',
@@ -1025,7 +1054,7 @@ export function createAgentProjector(): AgentProjector {
       }
 
       case 'subagent.started': {
-        const task = patchSubagent(s, sessionId, p?.subagentId, {
+        const task = patchRunningSubagent(s, sessionId, p?.subagentId, {
           subagentPhase: 'working',
           status: 'running',
           startedAt: new Date().toISOString(),
@@ -1035,7 +1064,7 @@ export function createAgentProjector(): AgentProjector {
       }
 
       case 'subagent.suspended': {
-        const task = patchSubagent(s, sessionId, p?.subagentId, {
+        const task = patchRunningSubagent(s, sessionId, p?.subagentId, {
           subagentPhase: 'suspended',
           status: 'running',
           suspendedReason: typeof p?.reason === 'string' ? p.reason : undefined,
@@ -1046,39 +1075,25 @@ export function createAgentProjector(): AgentProjector {
 
       case 'subagent.completed': {
         const outputPreview = typeof p?.resultSummary === 'string' ? p.resultSummary : undefined;
-        const task = patchSubagent(s, sessionId, p?.subagentId, {
+        const task = patchRunningSubagent(s, sessionId, p?.subagentId, {
           subagentPhase: 'completed',
           status: 'completed',
           completedAt: new Date().toISOString(),
           outputPreview,
         });
         if (task) out.push({ type: 'taskCreated', sessionId, task });
-        out.push({
-          type: 'taskCompleted',
-          sessionId,
-          taskId: p?.subagentId ?? '',
-          status: 'completed',
-          outputPreview,
-        });
         break;
       }
 
       case 'subagent.failed': {
         const outputPreview = typeof p?.error === 'string' ? p.error : undefined;
-        const task = patchSubagent(s, sessionId, p?.subagentId, {
+        const task = patchRunningSubagent(s, sessionId, p?.subagentId, {
           subagentPhase: 'failed',
           status: 'failed',
           completedAt: new Date().toISOString(),
           outputPreview,
         });
         if (task) out.push({ type: 'taskCreated', sessionId, task });
-        out.push({
-          type: 'taskCompleted',
-          sessionId,
-          taskId: p?.subagentId ?? '',
-          status: 'failed',
-          outputPreview,
-        });
         break;
       }
 
@@ -1101,7 +1116,7 @@ export function createAgentProjector(): AgentProjector {
       }
 
       // -----------------------------------------------------------------------
-      // Tasks (e.g. a detached Bash command). Real daemon shape:
+      // Tasks (e.g. a detached Bash command or Agent run). Real daemon shape:
       // payload.info = { taskId, description, status, startedAt(ms), endedAt,
       // kind:'process', command, pid, exitCode }.
       case 'task.started': {
@@ -1114,6 +1129,18 @@ export function createAgentProjector(): AgentProjector {
             : typeof info.taskId === 'number'
               ? String(info.taskId)
               : ulid('task_');
+        const agentId = typeof info.agentId === 'string' ? info.agentId : undefined;
+        if (info.kind === 'agent' && agentId !== undefined) {
+          const current = s.subagentMeta.get(agentId);
+          const task = patchSubagent(s, sessionId, agentId, {
+            id: taskId,
+            status: current?.status ?? 'running',
+            startedAt,
+            runInBackground: true,
+          });
+          if (task) out.push({ type: 'taskCreated', sessionId, task });
+          break;
+        }
         const description =
           typeof info.description === 'string'
             ? info.description
@@ -1140,18 +1167,51 @@ export function createAgentProjector(): AgentProjector {
       }
       case 'task.terminated': {
         const info = (p?.info ?? {}) as Record<string, unknown>;
+        const agentId = typeof info.agentId === 'string' ? info.agentId : undefined;
+        const taskId =
+          typeof info.taskId === 'string'
+            ? info.taskId
+            : typeof info.taskId === 'number'
+              ? String(info.taskId)
+              : '';
+        if (info.kind === 'agent' && agentId !== undefined) {
+          const status =
+            info.status === 'completed'
+              ? 'completed'
+              : info.status === 'killed'
+                ? 'cancelled'
+                : 'failed';
+          const task = patchSubagent(s, sessionId, agentId, {
+            id: taskId.length > 0 ? taskId : agentId,
+            status,
+            subagentPhase: status === 'completed' ? 'completed' : 'failed',
+            completedAt:
+              typeof info.endedAt === 'number'
+                ? new Date(info.endedAt).toISOString()
+                : new Date().toISOString(),
+            runInBackground: true,
+          });
+          if (task) {
+            out.push({
+              type: 'taskCompleted',
+              sessionId,
+              taskId: task.id,
+              agentId,
+              status,
+              subagentPhase: task.subagentPhase,
+              completedAt: task.completedAt,
+              runInBackground: true,
+            });
+          }
+          break;
+        }
         const failed =
           info.status === 'failed' ||
           (typeof info.exitCode === 'number' && info.exitCode !== 0);
         out.push({
           type: 'taskCompleted',
           sessionId,
-          taskId:
-            typeof info.taskId === 'string'
-              ? info.taskId
-              : typeof info.taskId === 'number'
-                ? String(info.taskId)
-                : '',
+          taskId,
           status: failed ? 'failed' : 'completed',
           // Do NOT set outputPreview here. The command is already kept on the
           // task as `command`; setting outputPreview to `$ <command>` would

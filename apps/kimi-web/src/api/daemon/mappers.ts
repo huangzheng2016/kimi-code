@@ -385,6 +385,7 @@ export function toWireQuestionResponse(input: QuestionResponse): WireQuestionRes
 export function toAppTask(wire: WireTask): AppTask {
   return {
     id: wire.id,
+    agentId: wire.agent_id,
     sessionId: wire.session_id,
     kind: wire.kind,
     description: wire.description,
