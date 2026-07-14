@@ -126,6 +126,7 @@ interface SessionState {
   // Subagent lifecycle deltas after spawned only carry subagentId. Keep the
   // spawned metadata here so later updates can replace the full AppTask.
   subagentMeta: Map<string, AppTask>;
+  subagentRosterAuthoritative: boolean;
 }
 
 function createSessionState(): SessionState {
@@ -146,6 +147,7 @@ function createSessionState(): SessionState {
     model: '',
     messages: [],
     subagentMeta: new Map(),
+    subagentRosterAuthoritative: false,
   };
 }
 
@@ -231,6 +233,7 @@ function patchRunningSubagent(
 ): AppTask | null {
   if (typeof subagentId !== 'string' || subagentId.length === 0) return null;
   const current = state.subagentMeta.get(subagentId);
+  if (current === undefined && state.subagentRosterAuthoritative) return null;
   if (current !== undefined && current.status !== 'running') return null;
   return patchSubagent(state, sessionId, subagentId, patch);
 }
@@ -536,6 +539,7 @@ export interface AgentProjector {
    * snapshot's `session.status` is the authoritative value.
    */
   seedInFlight(sessionId: string, turn: AppInFlightTurn): AppEvent[];
+  seedSubagents(sessionId: string, tasks: AppTask[] | undefined): void;
   /** Reset all per-session state (call on re-subscribe / resync). */
   reset(sessionId: string): void;
   /**
@@ -607,6 +611,16 @@ export function createAgentProjector(): AgentProjector {
     s.turnThinkLen = turn.thinkingText.length;
 
     return [{ type: 'messageCreated', message: cloneMessage(msg) }];
+  }
+
+  function seedSubagents(sessionId: string, tasks: AppTask[] | undefined): void {
+    const s = getOrCreate(sessionId);
+    s.subagentRosterAuthoritative = tasks !== undefined;
+    if (tasks === undefined) return;
+    for (const task of tasks) {
+      if (task.kind !== 'subagent') continue;
+      s.subagentMeta.set(task.agentId ?? task.id, task);
+    }
   }
 
   function project(
@@ -1132,6 +1146,8 @@ export function createAgentProjector(): AgentProjector {
         const agentId = typeof info.agentId === 'string' ? info.agentId : undefined;
         if (info.kind === 'agent' && agentId !== undefined) {
           const current = s.subagentMeta.get(agentId);
+          if (current === undefined ? s.subagentRosterAuthoritative : current.status !== 'running') break;
+          if (current !== undefined && current.id !== agentId && current.id !== taskId) break;
           const task = patchSubagent(s, sessionId, agentId, {
             id: taskId,
             status: current?.status ?? 'running',
@@ -1181,28 +1197,32 @@ export function createAgentProjector(): AgentProjector {
               : info.status === 'killed'
                 ? 'cancelled'
                 : 'failed';
-          const task = patchSubagent(s, sessionId, agentId, {
-            id: taskId.length > 0 ? taskId : agentId,
+          const current = s.subagentMeta.get(agentId);
+          if (current !== undefined && taskId.length > 0 && current.id !== taskId) break;
+          const completedAt =
+            typeof info.endedAt === 'number'
+              ? new Date(info.endedAt).toISOString()
+              : new Date().toISOString();
+          const task =
+            current === undefined && s.subagentRosterAuthoritative
+              ? null
+              : patchSubagent(s, sessionId, agentId, {
+                  id: taskId.length > 0 ? taskId : agentId,
+                  status,
+                  subagentPhase: status === 'completed' ? 'completed' : 'failed',
+                  completedAt,
+                  runInBackground: true,
+                });
+          out.push({
+            type: 'taskCompleted',
+            sessionId,
+            taskId: task?.id ?? (taskId || agentId),
+            agentId,
             status,
             subagentPhase: status === 'completed' ? 'completed' : 'failed',
-            completedAt:
-              typeof info.endedAt === 'number'
-                ? new Date(info.endedAt).toISOString()
-                : new Date().toISOString(),
+            completedAt: task?.completedAt ?? completedAt,
             runInBackground: true,
           });
-          if (task) {
-            out.push({
-              type: 'taskCompleted',
-              sessionId,
-              taskId: task.id,
-              agentId,
-              status,
-              subagentPhase: task.subagentPhase,
-              completedAt: task.completedAt,
-              runInBackground: true,
-            });
-          }
           break;
         }
         const failed =
@@ -1323,7 +1343,7 @@ export function createAgentProjector(): AgentProjector {
     return out;
   }
 
-  return { project, bindNextPromptId, seedInFlight, reset, markSideChannelAgent };
+  return { project, bindNextPromptId, seedInFlight, seedSubagents, reset, markSideChannelAgent };
 }
 
 // ---------------------------------------------------------------------------

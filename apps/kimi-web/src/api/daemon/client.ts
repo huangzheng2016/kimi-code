@@ -1382,12 +1382,13 @@ export class DaemonKimiWebApi implements KimiWebApi {
         // message list.
         if (snapshot.inFlightTurn === null) {
           projector.reset(sessionId);
-          return;
+        } else {
+          const appEvents = projector.seedInFlight(sessionId, snapshot.inFlightTurn);
+          for (const appEvent of appEvents) {
+            handlers.onEvent(appEvent, { sessionId, seq: snapshot.asOfSeq });
+          }
         }
-        const appEvents = projector.seedInFlight(sessionId, snapshot.inFlightTurn);
-        for (const appEvent of appEvents) {
-          handlers.onEvent(appEvent, { sessionId, seq: snapshot.asOfSeq });
-        }
+        projector.seedSubagents(sessionId, snapshot.subagents);
       },
       bindNextPromptId(sessionId: string, promptId: string): void {
         // Wire the real daemon prompt_id into the projector so turn.started

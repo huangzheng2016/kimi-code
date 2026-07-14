@@ -138,6 +138,11 @@ describe('detached Agent task projection', () => {
   ] as const)('maps Agent task terminal status %s', (taskStatus, status, phase) => {
     const projector = createAgentProjector();
     projector.project('subagent.spawned', { subagentId: 'agent-1' }, 's1');
+    projector.project(
+      'task.started',
+      { info: { taskId: 'agent-task-1', agentId: 'agent-1', kind: 'agent' } },
+      's1',
+    );
 
     const events = projector.project(
       'task.terminated',
@@ -192,14 +197,153 @@ describe('detached Agent task projection', () => {
       expect.objectContaining({ type: 'taskCompleted', status: 'cancelled' }),
     );
 
-    expect(projector.project('task.started', { info: { taskId: 'agent-task-1', agentId: 'agent-1', kind: 'agent' } }, 's1')).toContainEqual(
-      expect.objectContaining({
-        type: 'taskCreated',
-        task: expect.objectContaining({ id: 'agent-task-1', status: 'cancelled' }),
-      }),
-    );
+    expect(projector.project('task.started', { info: { taskId: 'agent-task-1', agentId: 'agent-1', kind: 'agent' } }, 's1')).toEqual([]);
     expect(projector.project('subagent.completed', { subagentId: 'agent-1', resultSummary: 'late' }, 's1')).toEqual([]);
     expect(projector.project('subagent.started', { subagentId: 'agent-1' }, 's1')).toEqual([]);
+  });
+
+  it('allows task.started after a new spawned run resets a terminal Agent', () => {
+    const projector = createAgentProjector();
+    projector.project('subagent.spawned', { subagentId: 'agent-1' }, 's1');
+    projector.project(
+      'task.started',
+      { info: { taskId: 'old-task', agentId: 'agent-1', kind: 'agent' } },
+      's1',
+    );
+    projector.project(
+      'task.terminated',
+      { info: { taskId: 'old-task', agentId: 'agent-1', kind: 'agent', status: 'killed' } },
+      's1',
+    );
+    projector.project('subagent.spawned', { subagentId: 'agent-1', description: 'new run' }, 's1');
+
+    expect(
+      projector.project(
+        'task.started',
+        { info: { taskId: 'new-task', agentId: 'agent-1', kind: 'agent' } },
+        's1',
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        type: 'taskCreated',
+        task: expect.objectContaining({ id: 'new-task', status: 'running', runInBackground: true }),
+      }),
+    );
+  });
+
+  it('seeds snapshot ownership so a late detach task.started updates the foreground row', () => {
+    const projector = createAgentProjector();
+    projector.seedSubagents('s1', [
+      {
+        id: 'agent-1',
+        agentId: 'agent-1',
+        sessionId: 's1',
+        kind: 'subagent',
+        description: 'Review files',
+        status: 'running',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        runInBackground: false,
+      },
+    ]);
+
+    expect(
+      projector.project(
+        'task.started',
+        { info: { taskId: 'agent-task-1', agentId: 'agent-1', kind: 'agent' } },
+        's1',
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        type: 'taskCreated',
+        task: expect.objectContaining({ id: 'agent-task-1', agentId: 'agent-1', runInBackground: true }),
+      }),
+    );
+  });
+
+  it('ignores a late task.started after a terminal snapshot seed', () => {
+    const projector = createAgentProjector();
+    projector.seedSubagents('s1', [
+      {
+        id: 'agent-task-1',
+        agentId: 'agent-1',
+        sessionId: 's1',
+        kind: 'subagent',
+        description: 'Review files',
+        status: 'cancelled',
+        subagentPhase: 'failed',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        runInBackground: true,
+      },
+    ]);
+
+    expect(
+      projector.project(
+        'task.started',
+        { info: { taskId: 'agent-task-1', agentId: 'agent-1', kind: 'agent' } },
+        's1',
+      ),
+    ).toEqual([]);
+  });
+
+  it('ignores an old task.started after a newer detached task owns the run', () => {
+    const projector = createAgentProjector();
+    projector.project('subagent.spawned', { subagentId: 'agent-1' }, 's1');
+    projector.project(
+      'task.started',
+      { info: { taskId: 'new-task', agentId: 'agent-1', kind: 'agent' } },
+      's1',
+    );
+
+    expect(
+      projector.project(
+        'task.started',
+        { info: { taskId: 'old-task', agentId: 'agent-1', kind: 'agent' } },
+        's1',
+      ),
+    ).toEqual([]);
+  });
+
+  it('ignores an old task termination after a new spawned run', () => {
+    const projector = createAgentProjector();
+    projector.project('subagent.spawned', { subagentId: 'agent-1' }, 's1');
+    projector.project(
+      'task.started',
+      { info: { taskId: 'old-task', agentId: 'agent-1', kind: 'agent' } },
+      's1',
+    );
+    projector.project('subagent.spawned', { subagentId: 'agent-1', description: 'new run' }, 's1');
+
+    expect(
+      projector.project(
+        'task.terminated',
+        { info: { taskId: 'old-task', agentId: 'agent-1', kind: 'agent', status: 'killed' } },
+        's1',
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps legacy lifecycle recovery when an older snapshot omits the roster', () => {
+    const projector = createAgentProjector();
+    projector.seedSubagents('s1', undefined);
+
+    expect(projector.project('subagent.started', { subagentId: 'agent-1' }, 's1')).toContainEqual(
+      expect.objectContaining({
+        type: 'taskCreated',
+        task: expect.objectContaining({ id: 'agent-1', status: 'running' }),
+      }),
+    );
+    expect(
+      projector.project(
+        'task.started',
+        { info: { taskId: 'agent-task-1', agentId: 'agent-1', kind: 'agent' } },
+        's1',
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        type: 'taskCreated',
+        task: expect.objectContaining({ id: 'agent-task-1', runInBackground: true }),
+      }),
+    );
   });
 });
 
