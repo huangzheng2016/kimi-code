@@ -759,4 +759,20 @@ describe('keepLiveSubagents', () => {
     ]);
   });
 
+  it('keeps a newly detached running row while a stale REST poll catches up', () => {
+    const detached: AppTask = {
+      id: 'agent-task-1',
+      sessionId: 's1',
+      kind: 'subagent',
+      description: 'Review files',
+      status: 'running',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      agentId: 'agent-1',
+      runInBackground: true,
+      subagentPhase: 'working',
+    };
+
+    expect(keepLiveSubagents([], [detached])).toEqual([detached]);
+  });
+
 });
