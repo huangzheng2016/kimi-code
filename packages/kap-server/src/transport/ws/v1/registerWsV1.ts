@@ -24,7 +24,11 @@ export interface RegisterWsV1Options {
 
 export function registerWsV1(core: Scope, opts: RegisterWsV1Options): WebSocketServer {
   void core;
-  const wss = new WebSocketServer({ noServer: true, handleProtocols: selectWsBearerProtocol });
+  const wss = new WebSocketServer({
+    noServer: true,
+    handleProtocols: selectWsBearerProtocol,
+    perMessageDeflate: true,
+  });
   const { registry, broadcaster } = opts;
 
   wss.on('connection', (socket, req) => {

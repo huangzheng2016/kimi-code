@@ -1,8 +1,32 @@
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { createReadStream, type Stats } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, relative, resolve, sep } from 'node:path';
+import { promisify } from 'node:util';
+import { gzip } from 'node:zlib';
 
 import type { FastifyReply, FastifyRequest } from 'fastify';
+
+const gzipBuffer = promisify(gzip);
+
+const GZIP_MIN_BYTES = 1024;
+
+const GZIP_COMPRESSIBLE_EXTENSIONS = new Set([
+  '.html',
+  '.js',
+  '.mjs',
+  '.css',
+  '.json',
+  '.svg',
+  '.wasm',
+]);
+
+interface GzipCacheEntry {
+  readonly mtimeMs: number;
+  readonly size: number;
+  readonly data: Buffer;
+}
+
+const gzipCache = new Map<string, GzipCacheEntry>();
 
 interface WebAssetRouteHost {
   get(
@@ -54,11 +78,50 @@ async function serveWebAsset(
     return reply.code(404).type('text/plain; charset=utf-8').send('Not found');
   }
 
+  const compressible = isGzipCompressible(filePath, fileInfo.size);
+  if (compressible && acceptsGzip(req)) {
+    const compressed = await gzipAsset(filePath, fileInfo);
+    return reply
+      .type(mimeType(filePath))
+      .header('Cache-Control', cacheControl(assetsDir, filePath))
+      .header('Vary', 'Accept-Encoding')
+      .header('Content-Encoding', 'gzip')
+      .header('Content-Length', String(compressed.length))
+      .send(compressed);
+  }
+
+  if (compressible) {
+    reply.header('Vary', 'Accept-Encoding');
+  }
   return reply
     .type(mimeType(filePath))
     .header('Cache-Control', cacheControl(assetsDir, filePath))
     .header('Content-Length', String(fileInfo.size))
     .send(createReadStream(filePath));
+}
+
+function isGzipCompressible(filePath: string, size: number): boolean {
+  return size >= GZIP_MIN_BYTES && GZIP_COMPRESSIBLE_EXTENSIONS.has(extname(filePath));
+}
+
+function acceptsGzip(req: FastifyRequest): boolean {
+  const header = req.headers['accept-encoding'];
+  if (header === undefined) {
+    return false;
+  }
+  return header
+    .split(',')
+    .some((value) => value.trim().toLowerCase().startsWith('gzip'));
+}
+
+async function gzipAsset(filePath: string, fileInfo: Stats): Promise<Buffer> {
+  const cached = gzipCache.get(filePath);
+  if (cached !== undefined && cached.mtimeMs === fileInfo.mtimeMs && cached.size === fileInfo.size) {
+    return cached.data;
+  }
+  const data = await gzipBuffer(await readFile(filePath));
+  gzipCache.set(filePath, { mtimeMs: fileInfo.mtimeMs, size: fileInfo.size, data });
+  return data;
 }
 
 function cacheControl(assetsDir: string, filePath: string): string {

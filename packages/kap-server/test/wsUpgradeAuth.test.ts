@@ -106,4 +106,28 @@ describe('WS upgrade auth', () => {
     const badUrl = `${v1Url().replace('/api/v1/ws', '/api/v1/other')}`;
     await expectRejected(badUrl, { protocols: [`kimi-code.bearer.${token()}`] });
   });
+
+  describe('permessage-deflate', () => {
+    it('negotiates permessage-deflate when the client offers it', async () => {
+      const { ws, firstFrame } = await openConn(v1Url(), {
+        protocols: [`kimi-code.bearer.${token()}`],
+      });
+      sockets.push(ws);
+      expect(ws.extensions).toContain('permessage-deflate');
+      expect(firstFrame).toMatchObject({ type: 'server_hello' });
+    });
+
+    it('connects without extensions when the client does not offer them', async () => {
+      const ws = await new Promise<WebSocket>((resolve, reject) => {
+        const socket = new WebSocket(v1Url(), [`kimi-code.bearer.${token()}`], {
+          perMessageDeflate: false,
+        });
+        socket.once('open', () => resolve(socket));
+        socket.once('error', reject);
+      });
+      sockets.push(ws);
+      expect(ws.extensions).toBe('');
+      ws.close();
+    });
+  });
 });
