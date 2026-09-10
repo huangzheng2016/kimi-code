@@ -68,6 +68,7 @@ import {
   parseAllowedHosts,
 } from './middleware/hostnames';
 import { createOriginHook, isOriginAllowed, parseCorsOrigins } from './middleware/origin';
+import { createGzipJsonHook } from './middleware/gzipJson';
 import { createSecurityHeadersHook } from './middleware/securityHeaders';
 import { createAuthHook } from './middleware/auth';
 import { GuiStoreService } from './services/guiStore/guiStoreService';
@@ -300,6 +301,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
   if (exposureClass !== 'loopback') {
     app.addHook('onSend', createSecurityHeadersHook({ tls: false }));
+    app.addHook('onSend', createGzipJsonHook());
   }
 
   const close = async (): Promise<void> => {
